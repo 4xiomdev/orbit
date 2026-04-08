@@ -62,10 +62,6 @@ enum AppBundleConfiguration {
             return "OPENAI_API_KEY"
         case "OpenAITranscriptionModel":
             return "OPENAI_TRANSCRIPTION_MODEL"
-        case "GroqAPIKey":
-            return "GROQ_API_KEY"
-        case "GroqTranscriptionModel":
-            return "GROQ_TRANSCRIPTION_MODEL"
         case "OpenAITTSModel":
             return "OPENAI_TTS_MODEL"
         case "CodexActionModel":

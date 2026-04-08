@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible problem in Orbit
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please avoid filing security issues here; use the private process in `SECURITY.md` instead.
+  - type: input
+    id: version
+    attributes:
+      label: Orbit version
+      placeholder: "v1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "macOS 15.4"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - PKG installer
+        - DMG drag install
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Tell us what you expected and what Orbit actually did.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Orbit
+        2. ...
+    validations:
+      required: true
+  - type: checkboxes
+    id: area
+    attributes:
+      label: Area
+      options:
+        - label: Permissions / onboarding
+        - label: ChatGPT / Codex auth
+        - label: Local voice
+        - label: Cloud voice
+        - label: Overlay / pointing
+        - label: Installer / update flow
+  - type: textarea
+    id: logs
+    attributes:
+      label: Extra context
+      description: Screenshots, console output, or any other context that might help.

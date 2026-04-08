@@ -5,7 +5,7 @@ Orbit is a Codex-native macOS menu bar assistant.
 ## Current architecture
 
 - UI shell: SwiftUI + AppKit panel/overlay
-- STT: Groq Whisper Turbo with Apple Speech fallback
+- STT: OpenAI `gpt-4o-mini-transcribe` with Apple Speech fallback
 - Brain and actions: Codex app-server
 - TTS: OpenAI `gpt-4o-mini-tts` with Apple system speech fallback
 
@@ -21,4 +21,4 @@ Orbit is a Codex-native macOS menu bar assistant.
 
 - Keep the point-tag flow in v1 instead of introducing a second coordinate detection architecture.
 - Orbit now uses one persistent Codex session for both answers and actions.
-- Menu bar settings should stay compact; prefer presets over deep configuration UI in the panel.
+- Menu bar settings should stay compact; prefer clear model/effort controls over sprawling configuration UI.

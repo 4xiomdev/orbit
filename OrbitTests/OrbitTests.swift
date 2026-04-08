@@ -1,6 +1,7 @@
 import Testing
 @testable import Orbit
 
+@MainActor
 struct OrbitTests {
 
     @Test func firstPermissionRequestUsesSystemPromptOnly() async throws {
