@@ -1,0 +1,9 @@
+worker/node_modules/
+worker/.dev.vars
+.DS_Store
+*.xcuserstate
+build/
+releases/
+.claude/
+coding-plans/
+Orbit/LocalSecrets.plist

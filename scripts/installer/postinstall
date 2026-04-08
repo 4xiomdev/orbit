@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+
+APP_PATH="/Applications/Orbit.app"
+
+if [[ ! -d "${APP_PATH}" ]]; then
+    exit 0
+fi
+
+CONSOLE_USER="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
+if [[ -z "${CONSOLE_USER}" || "${CONSOLE_USER}" == "root" || "${CONSOLE_USER}" == "loginwindow" ]]; then
+    exit 0
+fi
+
+CONSOLE_UID="$(id -u "${CONSOLE_USER}" 2>/dev/null || true)"
+if [[ -z "${CONSOLE_UID}" ]]; then
+    exit 0
+fi
+
+# Give LaunchServices a beat to settle after Installer finishes copying the app.
+sleep 1
+
+/bin/launchctl asuser "${CONSOLE_UID}" /usr/bin/open -a "${APP_PATH}" || true
+
+exit 0
