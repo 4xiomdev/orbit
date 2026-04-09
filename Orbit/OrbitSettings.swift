@@ -148,6 +148,7 @@ final class OrbitSettings: ObservableObject {
     }
 
     private enum Keys {
+        static let productDefaultsGeneration = "orbit.productDefaultsGeneration"
         static let voicePreset = "orbit.voicePreset"
         static let showCursor = "orbit.showCursor"
         static let codexReasoningEffort = "orbit.codexReasoningEffort"
@@ -156,7 +157,11 @@ final class OrbitSettings: ObservableObject {
         static let appleTTSVoiceIdentifier = "orbit.appleTTSVoiceIdentifier"
     }
 
+    private static let currentProductDefaultsGeneration = 2
+
     private init() {
+        Self.applyProductDefaultResetIfNeeded()
+
         voicePreset = OrbitVoicePreset(
             rawValue: UserDefaults.standard.string(forKey: Keys.voicePreset) ?? ""
         ) ?? .localVoice
@@ -182,5 +187,17 @@ final class OrbitSettings: ObservableObject {
         appleTTSVoiceIdentifier = UserDefaults.standard.string(forKey: Keys.appleTTSVoiceIdentifier)
             ?? AppBundleConfiguration.stringValue(forKey: "AppleTTSVoiceIdentifier")
             ?? ""
+    }
+
+    private static func applyProductDefaultResetIfNeeded() {
+        let storedGeneration = UserDefaults.standard.integer(forKey: Keys.productDefaultsGeneration)
+        guard storedGeneration < Self.currentProductDefaultsGeneration else { return }
+
+        UserDefaults.standard.removeObject(forKey: Keys.voicePreset)
+        UserDefaults.standard.removeObject(forKey: Keys.codexReasoningEffort)
+        UserDefaults.standard.removeObject(forKey: Keys.codexServiceTier)
+        UserDefaults.standard.removeObject(forKey: Keys.codexActionModel)
+        UserDefaults.standard.removeObject(forKey: Keys.appleTTSVoiceIdentifier)
+        UserDefaults.standard.set(Self.currentProductDefaultsGeneration, forKey: Keys.productDefaultsGeneration)
     }
 }

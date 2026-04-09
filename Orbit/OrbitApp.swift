@@ -30,6 +30,7 @@ struct OrbitApp: App {
 final class OrbitAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let orbitManager = OrbitManager()
+    private let installedBundlePath = "/Applications/Orbit.app"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🪐 Orbit: Starting...")
@@ -59,13 +60,40 @@ final class OrbitAppDelegate: NSObject, NSApplicationDelegate {
     /// General > Login Items, letting the user toggle it off if they want.
     private func registerAsLoginItemIfNeeded() {
         let loginItemService = SMAppService.mainApp
+        let currentBundlePath = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+        let isInstalledBundle = currentBundlePath == installedBundlePath
+        OrbitSupportLog.append(
+            "app",
+            "bundlePath=\(currentBundlePath) installedBundle=\(isInstalledBundle) loginItemStatus=\(loginItemService.status.rawValue)"
+        )
+
+        if !isInstalledBundle {
+            if loginItemService.status == .enabled {
+                do {
+                    try loginItemService.unregister()
+                    OrbitSupportLog.append("app", "unregistered login item for non-installed bundle")
+                    print("🪐 Orbit: Removed login item for non-installed bundle")
+                } catch {
+                    OrbitSupportLog.append("app", "failed to unregister login item: \(error.localizedDescription)")
+                    print("⚠️ Orbit: Failed to unregister login item: \(error)")
+                }
+            } else {
+                OrbitSupportLog.append("app", "skipped login item registration for non-installed bundle")
+            }
+            return
+        }
+
         if loginItemService.status != .enabled {
             do {
                 try loginItemService.register()
+                OrbitSupportLog.append("app", "registered login item for installed bundle")
                 print("🪐 Orbit: Registered as login item")
             } catch {
+                OrbitSupportLog.append("app", "failed to register login item: \(error.localizedDescription)")
                 print("⚠️ Orbit: Failed to register as login item: \(error)")
             }
+        } else {
+            OrbitSupportLog.append("app", "login item already enabled for installed bundle")
         }
     }
 }

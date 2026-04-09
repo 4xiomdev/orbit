@@ -7,6 +7,9 @@ final class CodexAppServerActionProvider: ActionProvider {
     private(set) var status: OrbitActionStatus = .idle
     private let settings = OrbitSettings.shared
     private(set) var authState: OrbitCodexAuthState = .unknown
+    private(set) var debugEvents: [String] = []
+    private(set) var collaborationModes: [String] = []
+    private(set) var experimentalFeatures: [String] = []
 
     private var process: Process?
     private var stdinHandle: FileHandle?
@@ -36,10 +39,15 @@ final class CodexAppServerActionProvider: ActionProvider {
     private var availableModelOptions: [OrbitCodexModelOption] = OrbitCodexModelOption.fallbackPickerModels
     private var pendingModelCatalogRequestID: Int?
     private var pendingAccountReadRequestID: Int?
+    private var pendingCollaborationModeRequestID: Int?
+    private var pendingExperimentalFeatureRequestID: Int?
     private var pendingLoginRequestID: Int?
     private var pendingLogoutRequestID: Int?
     private var lastLoginURL: URL?
     private var lastLoginID: String?
+    private var loginRequestTimeoutTask: Task<Void, Never>?
+    private var lastEmittedLiveCommentary: String?
+    private var preparedCodexHome: OrbitPreparedCodexHome?
     var stateDidChange: (() -> Void)?
 
     var isConfigured: Bool {
@@ -140,6 +148,20 @@ final class CodexAppServerActionProvider: ActionProvider {
         }
     }
 
+    var canInterruptCurrentAction: Bool {
+        guard let process else { return false }
+        return process.isRunning && isAwaitingTurnCompletion && activeTurnID?.isEmpty == false && activeThreadID?.isEmpty == false
+    }
+
+    var activeTurnSummary: String? {
+        guard let threadID = activeThreadID else { return nil }
+        let shortThread = String(threadID.suffix(6))
+        if let turnID = activeTurnID, !turnID.isEmpty {
+            return "thr \(shortThread) · turn \(String(turnID.suffix(6)))"
+        }
+        return "thr \(shortThread)"
+    }
+
     func submitActionRequest(
         _ request: OrbitActionRequest,
         onEvent: @escaping @Sendable (OrbitActionEvent) -> Void
@@ -180,11 +202,24 @@ final class CodexAppServerActionProvider: ActionProvider {
         }
 
         if isAwaitingTurnCompletion {
-            emitPhase(
-                .thinking,
-                detail: "finishing the current request before taking a new one.",
-                rawSource: "codex is already working on the current action"
-            )
+            if case .waitingForApproval = status {
+                emitPhase(
+                    .waitingForChoice,
+                    detail: "answer the current tool question before steering codex.",
+                    rawSource: "orbit is waiting on a tool choice"
+                )
+                appendDebugEvent("turn blocked while waiting on tool choice")
+                return
+            }
+
+            pendingPrompt = wrappedPrompt(for: request)
+            latestRequest = request
+            latestAgentMessageText = nil
+            latestFinalAnswerText = nil
+            streamedCommentaryBuffer = ""
+            hasEmittedEarlyCommentary = false
+            lastEmittedLiveCommentary = nil
+            sendTurnSteer()
             return
         }
 
@@ -193,7 +228,25 @@ final class CodexAppServerActionProvider: ActionProvider {
         latestFinalAnswerText = nil
         streamedCommentaryBuffer = ""
         hasEmittedEarlyCommentary = false
+        lastEmittedLiveCommentary = nil
         sendTurnStart()
+    }
+
+    func respondToToolPrompt(requestID: Int, questionID: String, answer: String) {
+        appendDebugEvent("tool prompt answered with \(answer)")
+        sendResponse(
+            id: requestID,
+            result: [
+                "answers": [
+                    [
+                        "id": questionID,
+                        "value": answer
+                    ]
+                ]
+            ]
+        )
+        status = .running
+        emitPhase(.thinking, detail: "continuing with your answer.", rawSource: "tool prompt answered")
     }
 
     func prewarmSession(forceFreshSession: Bool = false) async -> String? {
@@ -212,8 +265,15 @@ final class CodexAppServerActionProvider: ActionProvider {
 
     func beginManagedLogin() async {
         if case .loginInProgress = authState {
-            reopenManagedLoginURL()
-            return
+            if lastLoginURL != nil {
+                reopenManagedLoginURL()
+                return
+            }
+
+            appendDebugEvent("restarting stale login request without saved URL")
+            pendingLoginRequestID = nil
+            loginRequestTimeoutTask?.cancel()
+            loginRequestTimeoutTask = nil
         }
 
         if let error = await prewarmSession() {
@@ -229,6 +289,8 @@ final class CodexAppServerActionProvider: ActionProvider {
 
         let requestID = nextClientRequestID()
         pendingLoginRequestID = requestID
+        appendDebugEvent("-> account/login/start #\(requestID)")
+        beginLoginTimeoutWatch(for: requestID)
         sendJSON([
             "method": "account/login/start",
             "id": requestID,
@@ -240,7 +302,8 @@ final class CodexAppServerActionProvider: ActionProvider {
 
     func reopenManagedLoginURL() {
         guard let lastLoginURL else { return }
-        NSWorkspace.shared.open(lastLoginURL)
+        appendDebugEvent("reopening saved login URL")
+        _ = openExternalURL(lastLoginURL)
     }
 
     func logoutAccount() {
@@ -336,6 +399,7 @@ final class CodexAppServerActionProvider: ActionProvider {
            let process,
            process.isRunning,
            isAwaitingTurnCompletion {
+            appendDebugEvent("-> turn/interrupt turn=\(String(activeTurnID.suffix(6)))")
             sendJSON([
                 "method": "turn/interrupt",
                 "id": 3,
@@ -344,7 +408,8 @@ final class CodexAppServerActionProvider: ActionProvider {
                     "turnId": activeTurnID
                 ]
             ])
-            status = .idle
+            status = .interrupted("stopping the current codex turn.")
+            emitPhase(.interrupted, detail: "stopping the current codex turn.", rawSource: "interrupting codex")
             return
         }
 
@@ -378,7 +443,14 @@ final class CodexAppServerActionProvider: ActionProvider {
 
     private func startServerIfNeeded() throws {
         let codexExecutable = try resolveCodexExecutable()
-        let launchCommand = resolvedCodexLaunchCommand(for: codexExecutable)
+        let preparedCodexHome = try OrbitCodexEnvironment.prepareHome()
+        self.preparedCodexHome = preparedCodexHome
+        let launchCommand = resolvedCodexLaunchCommand(
+            for: codexExecutable,
+            preparedCodexHome: preparedCodexHome
+        )
+        appendDebugEvent("starting codex app-server from \(codexExecutable)")
+        appendDebugEvent("using isolated codex home \(preparedCodexHome.homeDirectory.path)")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchCommand.executable)
         process.arguments = launchCommand.arguments
@@ -428,7 +500,10 @@ final class CodexAppServerActionProvider: ActionProvider {
         }
     }
 
-    private func resolvedCodexLaunchCommand(for codexExecutable: String) -> (executable: String, arguments: [String], environment: [String: String]) {
+    private func resolvedCodexLaunchCommand(
+        for codexExecutable: String,
+        preparedCodexHome: OrbitPreparedCodexHome
+    ) -> (executable: String, arguments: [String], environment: [String: String]) {
         let executableURL = URL(fileURLWithPath: codexExecutable)
         let executableDirectory = executableURL.deletingLastPathComponent().path
         let existingEnvironment = ProcessInfo.processInfo.environment
@@ -438,6 +513,7 @@ final class CodexAppServerActionProvider: ActionProvider {
         let pathSegments = [executableDirectory] + existingPath.split(separator: ":").map(String.init)
         mergedEnvironment["PATH"] = Array(NSOrderedSet(array: pathSegments)).compactMap { $0 as? String }.joined(separator: ":")
         mergedEnvironment["HOME"] = NSHomeDirectory()
+        mergedEnvironment["CODEX_HOME"] = preparedCodexHome.homeDirectory.path
 
         if let firstLine = try? String(contentsOf: executableURL, encoding: .utf8)
             .components(separatedBy: .newlines)
@@ -486,6 +562,33 @@ final class CodexAppServerActionProvider: ActionProvider {
     private func handleServerMessage(_ message: [String: Any]) {
         if let error = message["error"] as? [String: Any] {
             let errorMessage = error["message"] as? String ?? "Codex app-server returned an unknown error."
+            appendDebugEvent("<- error \(errorMessage)")
+
+            if let id = message["id"] as? Int {
+                if id == pendingCollaborationModeRequestID {
+                    pendingCollaborationModeRequestID = nil
+                    collaborationModes = []
+                    notifyStateChanged()
+                    return
+                }
+
+                if id == pendingExperimentalFeatureRequestID {
+                    pendingExperimentalFeatureRequestID = nil
+                    experimentalFeatures = []
+                    notifyStateChanged()
+                    return
+                }
+
+                if id == pendingLoginRequestID {
+                    pendingLoginRequestID = nil
+                    loginRequestTimeoutTask?.cancel()
+                    loginRequestTimeoutTask = nil
+                    authState = .authFailed(errorMessage)
+                    notifyStateChanged()
+                    return
+                }
+            }
+
             status = .failed(errorMessage)
             eventHandler?(.failed(errorMessage))
             teardownProcess()
@@ -495,22 +598,30 @@ final class CodexAppServerActionProvider: ActionProvider {
         if let method = message["method"] as? String {
             switch method {
             case "account/login/completed":
+                appendDebugEvent("<- account/login/completed")
                 handleAccountLoginCompleted(message)
             case "account/updated":
+                appendDebugEvent("<- account/updated")
                 handleAccountUpdated(message)
             case "mcpServer/elicitation/request":
+                appendDebugEvent("<- mcpServer/elicitation/request")
                 handleMcpElicitationRequest(message)
             case "item/commandExecution/requestApproval":
+                appendDebugEvent("<- item/commandExecution/requestApproval")
                 handleCommandApprovalRequest(message)
             case "item/fileChange/requestApproval":
+                appendDebugEvent("<- item/fileChange/requestApproval")
                 handleFileChangeApprovalRequest(message)
             case "item/permissions/requestApproval":
+                appendDebugEvent("<- item/permissions/requestApproval")
                 handlePermissionsApprovalRequest(message)
             case "item/tool/requestUserInput":
+                appendDebugEvent("<- item/tool/requestUserInput")
                 handleToolRequestUserInput(message)
             case "thread/status/changed":
                 handleThreadStatusChanged(message)
             case "serverRequest/resolved":
+                appendDebugEvent("<- serverRequest/resolved")
                 emitPhase(.thinking, rawSource: "codex resumed work")
             case "mcpServer/startupStatus/updated":
                 handleMcpStartupStatus(message)
@@ -518,6 +629,7 @@ final class CodexAppServerActionProvider: ActionProvider {
                 if let params = message["params"] as? [String: Any],
                    let turn = params["turn"] as? [String: Any],
                    let turnID = turn["id"] as? String {
+                    appendDebugEvent("<- turn/started \(String(turnID.suffix(6)))")
                     activeTurnID = turnID
                     isAwaitingTurnCompletion = true
                     emitPhase(.thinking, rawSource: "codex is working on it")
@@ -534,17 +646,20 @@ final class CodexAppServerActionProvider: ActionProvider {
                    let text = item["text"] as? String,
                    !text.isEmpty {
                     let phase = item["phase"] as? String
-                   if phase == "final_answer" || phase == "finalAnswer" {
+                    if phase == "final_answer" || phase == "finalAnswer" {
+                        appendDebugEvent("<- item/completed final_answer")
                         latestFinalAnswerText = text
                     } else {
+                        appendDebugEvent("<- item/completed agentMessage")
                         latestAgentMessageText = text
                         emitCompletedCommentaryIfNeeded(text: text)
                     }
                 }
             case "item/mcpToolCall/progress":
-                break
+                handleMcpToolCallProgress(message)
             case "turn/completed":
                 let turnStatus = turnStatus(from: message)
+                appendDebugEvent("<- turn/completed status=\(turnStatus ?? "unknown")")
                 let summary = summarizedCompletionMessage(from: message)
                     ?? latestFinalAnswerText
                     ?? latestAgentMessageText
@@ -562,6 +677,9 @@ final class CodexAppServerActionProvider: ActionProvider {
                 if turnStatus == "failed" {
                     status = .failed(summary)
                     eventHandler?(.failed(summary))
+                } else if turnStatus == "interrupted" {
+                    status = .interrupted(summary)
+                    eventHandler?(.interrupted(summary))
                 } else {
                     status = .completed(summary)
                     eventHandler?(.completed(summary))
@@ -575,6 +693,7 @@ final class CodexAppServerActionProvider: ActionProvider {
         if let id = message["id"] as? Int,
            id == 0,
            message["result"] as? [String: Any] != nil {
+            appendDebugEvent("<- initialize ok")
             hasReceivedInitializeResponse = true
             hasSentInitialize = false
             startupTimeoutTask?.cancel()
@@ -588,6 +707,7 @@ final class CodexAppServerActionProvider: ActionProvider {
            id == pendingAccountReadRequestID,
            let result = message["result"] as? [String: Any] {
             pendingAccountReadRequestID = nil
+            appendDebugEvent("<- account/read ok")
             updateAccountState(from: result)
             if isAuthenticatedForTurns, activeThreadID == nil {
                 sendThreadStart()
@@ -597,16 +717,42 @@ final class CodexAppServerActionProvider: ActionProvider {
         }
 
         if let id = message["id"] as? Int,
+           id == pendingCollaborationModeRequestID,
+           let result = message["result"] as? [String: Any] {
+            pendingCollaborationModeRequestID = nil
+            updateCollaborationModes(from: result)
+            appendDebugEvent("<- collaborationMode/list modes=\(collaborationModes.count)")
+            notifyStateChanged()
+            return
+        }
+
+        if let id = message["id"] as? Int,
+           id == pendingExperimentalFeatureRequestID,
+           let result = message["result"] as? [String: Any] {
+            pendingExperimentalFeatureRequestID = nil
+            updateExperimentalFeatures(from: result)
+            appendDebugEvent("<- experimentalFeature/list features=\(experimentalFeatures.count)")
+            notifyStateChanged()
+            return
+        }
+
+        if let id = message["id"] as? Int,
            id == pendingLoginRequestID,
            let result = message["result"] as? [String: Any] {
             pendingLoginRequestID = nil
+            loginRequestTimeoutTask?.cancel()
+            loginRequestTimeoutTask = nil
             if let authURLString = result["authUrl"] as? String,
                let authURL = URL(string: authURLString) {
+                appendDebugEvent("<- account/login/start authUrl")
                 lastLoginURL = authURL
                 lastLoginID = result["loginId"] as? String
                 authState = .loginInProgress
                 notifyStateChanged()
-                NSWorkspace.shared.open(authURL)
+                if !openExternalURL(authURL) {
+                    authState = .authFailed("Orbit received the ChatGPT login link, but could not open your browser.")
+                    notifyStateChanged()
+                }
             } else {
                 authState = .authFailed("Orbit could not open ChatGPT sign-in.")
                 notifyStateChanged()
@@ -618,6 +764,7 @@ final class CodexAppServerActionProvider: ActionProvider {
            id == pendingLogoutRequestID,
            message["result"] as? [String: Any] != nil {
             pendingLogoutRequestID = nil
+            appendDebugEvent("<- account/logout ok")
             authState = .authRequired
             activeThreadID = nil
             hasSentThreadStart = false
@@ -630,6 +777,7 @@ final class CodexAppServerActionProvider: ActionProvider {
            let result = message["result"] as? [String: Any] {
             pendingModelCatalogRequestID = nil
             updateModelCatalog(from: result)
+            appendDebugEvent("<- model/list models=\(availableModelOptions.count)")
             notifyStateChanged()
             return
         }
@@ -642,6 +790,7 @@ final class CodexAppServerActionProvider: ActionProvider {
            let threadID = thread["id"] as? String {
             activeThreadID = threadID
             hasSentThreadStart = false
+            appendDebugEvent("<- thread/start ok \(String(threadID.suffix(6)))")
             notifyStateChanged()
             if pendingPrompt != nil {
                 sendTurnStart()
@@ -653,8 +802,17 @@ final class CodexAppServerActionProvider: ActionProvider {
 
         if let id = message["id"] as? Int, id == 2,
            message["result"] as? [String: Any] != nil {
+            appendDebugEvent("<- turn/start accepted")
             isAwaitingTurnCompletion = true
             emitPhase(.thinking, rawSource: "codex is working on it")
+            return
+        }
+
+        if let id = message["id"] as? Int,
+           id == 3,
+           message["result"] as? [String: Any] != nil {
+            appendDebugEvent("<- turn/interrupt accepted")
+            emitPhase(.interrupted, detail: "stopping the current codex turn.", rawSource: "interrupting codex")
             return
         }
     }
@@ -699,12 +857,37 @@ final class CodexAppServerActionProvider: ActionProvider {
     private func sendModelList() {
         let requestID = nextClientRequestID()
         pendingModelCatalogRequestID = requestID
+        appendDebugEvent("-> model/list #\(requestID)")
         sendJSON([
             "method": "model/list",
             "id": requestID,
             "params": [
                 "limit": 50,
                 "includeHidden": false
+            ]
+        ])
+    }
+
+    private func sendCollaborationModeList() {
+        let requestID = nextClientRequestID()
+        pendingCollaborationModeRequestID = requestID
+        appendDebugEvent("-> collaborationMode/list #\(requestID)")
+        sendJSON([
+            "method": "collaborationMode/list",
+            "id": requestID,
+            "params": [:]
+        ])
+    }
+
+    private func sendExperimentalFeatureList() {
+        let requestID = nextClientRequestID()
+        pendingExperimentalFeatureRequestID = requestID
+        appendDebugEvent("-> experimentalFeature/list #\(requestID)")
+        sendJSON([
+            "method": "experimentalFeature/list",
+            "id": requestID,
+            "params": [
+                "limit": 100
             ]
         ])
     }
@@ -722,6 +905,7 @@ final class CodexAppServerActionProvider: ActionProvider {
         if settings.codexServiceTier == .fast {
             params["serviceTier"] = OrbitCodexServiceTier.fast.rawValue
         }
+        appendDebugEvent("-> thread/start model=\(normalizedCurrentActionModel) effort=\(resolvedEffortForCurrentModel.rawValue) tier=\(settings.codexServiceTier.rawValue)")
         sendJSON([
             "method": "thread/start",
             "id": 1,
@@ -763,6 +947,23 @@ final class CodexAppServerActionProvider: ActionProvider {
             }
         }
 
+        let activeSkills = activeBundledSkillsForCurrentRequest()
+        if !activeSkills.isEmpty {
+            inputItems.append([
+                "type": "text",
+                "text": activeSkills.map { "$\($0.name)" }.joined(separator: " ")
+            ])
+
+            for skill in activeSkills {
+                inputItems.append([
+                    "type": "skill",
+                    "name": skill.name,
+                    "path": skill.path.path
+                ])
+            }
+            appendDebugEvent("injecting skills: \(activeSkills.map(\.name).joined(separator: ", "))")
+        }
+
         inputItems.append([
             "type": "text",
             "text": pendingPrompt
@@ -777,12 +978,87 @@ final class CodexAppServerActionProvider: ActionProvider {
         if settings.codexServiceTier == .fast {
             params["serviceTier"] = OrbitCodexServiceTier.fast.rawValue
         }
+        appendDebugEvent("-> turn/start model=\(currentActionModel) effort=\(resolvedEffortForCurrentModel.rawValue) tier=\(settings.codexServiceTier.rawValue) inputItems=\(inputItems.count)")
 
         sendJSON([
             "method": "turn/start",
             "id": 2,
             "params": params
         ])
+    }
+
+    private func sendTurnSteer() {
+        guard let threadID = activeThreadID,
+              let activeTurnID,
+              let pendingPrompt else {
+            return
+        }
+
+        var inputItems: [[String: Any]] = []
+
+        if let latestRequest,
+           let screenshotPath = latestRequest.screenshotPath,
+           !screenshotPath.isEmpty {
+            inputItems.append([
+                "type": "localImage",
+                "path": screenshotPath
+            ])
+
+            if let visualContext = visualContextMessage(for: latestRequest) {
+                inputItems.append([
+                    "type": "text",
+                    "text": visualContext
+                ])
+            }
+        }
+
+        let activeSkills = activeBundledSkillsForCurrentRequest()
+        if !activeSkills.isEmpty {
+            inputItems.append([
+                "type": "text",
+                "text": activeSkills.map { "$\($0.name)" }.joined(separator: " ")
+            ])
+
+            for skill in activeSkills {
+                inputItems.append([
+                    "type": "skill",
+                    "name": skill.name,
+                    "path": skill.path.path
+                ])
+            }
+            appendDebugEvent("injecting skills on steer: \(activeSkills.map(\.name).joined(separator: ", "))")
+        }
+
+        inputItems.append([
+            "type": "text",
+            "text": pendingPrompt
+        ])
+
+        let requestID = nextClientRequestID()
+        appendDebugEvent("-> turn/steer #\(requestID) turn=\(String(activeTurnID.suffix(6))) inputItems=\(inputItems.count)")
+        sendJSON([
+            "method": "turn/steer",
+            "id": requestID,
+            "params": [
+                "threadId": threadID,
+                "input": inputItems,
+                "expectedTurnId": activeTurnID
+            ]
+        ])
+
+        emitPhase(
+            .thinking,
+            detail: "steering the current codex turn.",
+            rawSource: "steering the current codex turn"
+        )
+    }
+
+    private func activeBundledSkillsForCurrentRequest() -> [OrbitBundledSkill] {
+        guard let latestRequest else { return [] }
+        return OrbitBundledSkills.activeSkills(
+            for: latestRequest,
+            preparedCodexHome: preparedCodexHome
+        )
     }
 
     private func nextClientRequestID() -> Int {
@@ -798,6 +1074,7 @@ final class CodexAppServerActionProvider: ActionProvider {
     }
 
     private func sendResponse(id: Int, result: [String: Any]) {
+        appendDebugEvent("-> response #\(id)")
         sendJSON([
             "id": id,
             "result": result
@@ -1011,6 +1288,40 @@ final class CodexAppServerActionProvider: ActionProvider {
         }
     }
 
+    private func beginLoginTimeoutWatch(for requestID: Int) {
+        loginRequestTimeoutTask?.cancel()
+        loginRequestTimeoutTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard pendingLoginRequestID == requestID else { return }
+            appendDebugEvent("account/login/start timed out")
+            pendingLoginRequestID = nil
+            authState = .authFailed("Orbit did not receive the ChatGPT sign-in link. Try connecting again.")
+            notifyStateChanged()
+        }
+    }
+
+    @discardableResult
+    private func openExternalURL(_ url: URL) -> Bool {
+        if NSWorkspace.shared.open(url) {
+            appendDebugEvent("opened login URL in browser")
+            return true
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = [url.absoluteString]
+
+        do {
+            try process.run()
+            appendDebugEvent("opened login URL via /usr/bin/open")
+            return true
+        } catch {
+            appendDebugEvent("failed to open login URL: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     private func updateAccountState(from result: [String: Any]) {
         if let account = result["account"] as? [String: Any] {
             authState = .authenticated(
@@ -1041,7 +1352,7 @@ final class CodexAppServerActionProvider: ActionProvider {
                 emitPhase(progressForCommand(command), rawSource: "running \(command.joined(separator: " "))")
             }
         case "fileChange":
-            emitPhase(.typing, detail: "preparing changes in the current session.", rawSource: "preparing changes")
+            emitPhase(.editingFiles, detail: "editing files in the current session.", rawSource: "preparing changes")
         default:
             break
         }
@@ -1071,6 +1382,12 @@ final class CodexAppServerActionProvider: ActionProvider {
 
         streamedCommentaryBuffer.append(deltaText)
 
+        if let update = visibleCommentaryUpdate(from: streamedCommentaryBuffer),
+           update != lastEmittedLiveCommentary {
+            lastEmittedLiveCommentary = update
+            eventHandler?(.liveUpdate(update))
+        }
+
         guard !hasEmittedEarlyCommentary,
               let snippet = speakableCommentarySnippet(from: streamedCommentaryBuffer) else {
             return
@@ -1081,6 +1398,12 @@ final class CodexAppServerActionProvider: ActionProvider {
     }
 
     private func emitCompletedCommentaryIfNeeded(text: String) {
+        if let update = visibleCommentaryUpdate(from: text),
+           update != lastEmittedLiveCommentary {
+            lastEmittedLiveCommentary = update
+            eventHandler?(.liveUpdate(update))
+        }
+
         guard !hasEmittedEarlyCommentary,
               let snippet = speakableCommentarySnippet(from: text) else {
             return
@@ -1095,28 +1418,50 @@ final class CodexAppServerActionProvider: ActionProvider {
               let params = message["params"] as? [String: Any],
               let questions = params["questions"] as? [[String: Any]],
               let firstQuestion = questions.first,
-              let options = firstQuestion["options"] as? [[String: Any]],
-              let recommendedOption = options.first,
-              let optionLabel = recommendedOption["label"] as? String else {
+              let options = firstQuestion["options"] as? [[String: Any]] else {
             return
         }
 
-        status = .waitingForApproval("tool prompt")
-        emitPhase(.waitingForApproval, detail: "answering a tool prompt for this session.", rawSource: "tool prompt")
+        let optionLabels = options.compactMap { $0["label"] as? String }
+        let promptTitle = firstQuestion["question"] as? String
+            ?? params["message"] as? String
+            ?? "Codex needs your answer."
+        let questionID = firstQuestion["id"] as? String ?? "choice"
+        let detail = optionLabels.isEmpty ? nil : optionLabels.joined(separator: " · ")
 
-        sendResponse(
-            id: requestID,
-            result: [
-                "answers": [
-                    [
-                        "id": firstQuestion["id"] as? String ?? "choice",
-                        "value": optionLabel
-                    ]
-                ]
-            ]
+        status = .waitingForApproval(promptTitle)
+        emitPhase(.waitingForChoice, detail: promptTitle, rawSource: "waiting on your tool choice")
+        eventHandler?(
+            .toolPrompt(
+                OrbitToolPrompt(
+                    requestID: requestID,
+                    title: promptTitle,
+                    detail: detail,
+                    questionID: questionID,
+                    options: optionLabels
+                )
+            )
         )
-        status = .running
-        emitPhase(.thinking, rawSource: "answering codex tool prompt with \(optionLabel.lowercased())")
+    }
+
+    private func handleMcpToolCallProgress(_ message: [String: Any]) {
+        guard let params = message["params"] as? [String: Any] else { return }
+
+        let item = params["item"] as? [String: Any]
+        let server = (item?["server"] as? String) ?? (params["server"] as? String) ?? "tool"
+        let tool = (item?["tool"] as? String) ?? (params["tool"] as? String) ?? "action"
+        let progressText = firstString(in: params["delta"])
+            ?? firstString(in: params["message"])
+            ?? firstString(in: item?["message"])
+            ?? firstString(in: item?["delta"])
+
+        emitPhase(progressForTool(server: server, tool: tool), rawSource: "using \(server) \(tool)")
+        if let progressText {
+            let cleaned = progressText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty {
+                eventHandler?(.liveUpdate(cleaned))
+            }
+        }
     }
 
     private func emitPhase(
@@ -1131,6 +1476,10 @@ final class CodexAppServerActionProvider: ActionProvider {
         }
 
         lastEmittedProgress = progress
+        appendDebugEvent(
+            "phase=\(phase.summaryText)"
+                + (progress.resolvedDetail.map { " detail=\($0)" } ?? "")
+        )
         eventHandler?(.phase(progress))
     }
 
@@ -1183,9 +1532,11 @@ final class CodexAppServerActionProvider: ActionProvider {
                 || normalizedTool.contains("network") {
                 return OrbitActionProgress(phase: .readingScreen)
             }
+
+            return OrbitActionProgress(phase: .usingTool, detail: "using browser tools in the current session.")
         }
 
-        return OrbitActionProgress(phase: .thinking)
+        return OrbitActionProgress(phase: .usingTool, detail: "using \(server) \(tool).")
     }
 
     private func progressForCommand(_ command: [String]) -> OrbitActionProgress? {
@@ -1196,7 +1547,7 @@ final class CodexAppServerActionProvider: ActionProvider {
             return OrbitActionProgress(phase: .openingBrowser)
         }
 
-        return OrbitActionProgress(phase: .thinking)
+        return OrbitActionProgress(phase: .runningCommand, detail: "running \(command.joined(separator: " ")).")
     }
 
     private func visualContextMessage(for request: OrbitActionRequest?) -> String? {
@@ -1220,43 +1571,30 @@ final class CodexAppServerActionProvider: ActionProvider {
     }
 
     private func wrappedPrompt(for request: OrbitActionRequest) -> String {
-        let visualContextBlock: String
-        if let imagePixelSize = request.imagePixelSize,
-           let cursorPoint = request.cursorPointInImagePixels {
-            let screenLabel = request.screenNumber.map { "screen \($0)" } ?? "the current screen"
-            visualContextBlock = """
-            Attached visual context:
-            - image: \(screenLabel)
-            - image size: \(Int(imagePixelSize.width))x\(Int(imagePixelSize.height)) pixels
-            - cursor position in image pixels: \(Int(cursorPoint.x)),\(Int(cursorPoint.y))
-            """
-        } else {
-            visualContextBlock = "Attached visual context: unavailable for this turn."
-        }
+        let frontmostContextBlock: String = {
+            let appName = request.frontmostApplicationName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let windowTitle = request.frontmostWindowTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if let appName, !appName.isEmpty, let windowTitle, !windowTitle.isEmpty {
+                return """
+                Frontmost desktop context:
+                - active app: \(appName)
+                - focused window: \(windowTitle)
+                """
+            }
+
+            if let appName, !appName.isEmpty {
+                return """
+                Frontmost desktop context:
+                - active app: \(appName)
+                """
+            }
+
+            return "Frontmost desktop context: unavailable for this turn."
+        }()
 
         return """
-        You are Orbit, a Codex-native macOS voice-and-screen assistant.
-
-        You are the single brain for Orbit. Orbit handles microphone input, screenshots, overlays, HUD updates, and text-to-speech. You handle reasoning, tool use, and final answers for this persistent session.
-
-        Rules:
-        - treat any attached screenshot as the user's current visual context and prioritize the screen they are actively using
-        - use the structured visual context block below instead of guessing where the cursor is
-        - unless the user says otherwise, prioritize what is nearest the current cursor position as the primary focal area in the screenshot
-        - decide whether to answer directly or take action; if the user is asking for something to be done, act instead of only describing it
-        - keep commentary short and useful while work is happening because Orbit may show it in a compact HUD
-        - keep commentary to short Orbit-safe milestones, not rambling prose
-        - give a concise final answer that can be spoken aloud naturally
-        - if pointing would help in the final answer, append exactly one tag at the end using [POINT:x,y:label] or [POINT:x,y:label:screenN]
-        - if pointing would not help, append [POINT:none] at the end of the final answer
-        - only include the [POINT:...] tag in the final answer, not in commentary
-        - for website or desktop requests, use available tools to do the work directly instead of only describing it
-        - if the user's utterance is incomplete or ambiguous, ask one short clarifying question in the final answer instead of inventing details
-        - do not emit filler like "i'm not sure what you want me to do yet" in commentary
-        - if blocked, say exactly what permission or capability is missing
-        - reuse the existing browser state and Codex session when possible
-
-        \(visualContextBlock)
+        \(frontmostContextBlock)
 
         User request:
         \(request.transcript)
@@ -1391,6 +1729,30 @@ final class CodexAppServerActionProvider: ActionProvider {
         return "\(trimmed)..."
     }
 
+    private func visibleCommentaryUpdate(from text: String) -> String? {
+        let cleaned = text
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.count >= 10 else { return nil }
+
+        let firstSentence = cleaned
+            .split(whereSeparator: { ".!?".contains($0) })
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? cleaned
+
+        guard firstSentence.split(separator: " ").count >= 3 else { return nil }
+        if firstSentence.count <= 96 {
+            return firstSentence
+        }
+
+        let prefix = String(firstSentence.prefix(93))
+        let trimmed = prefix
+            .replacingOccurrences(of: "\\s+\\S*$", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : "\(trimmed)..."
+    }
+
     private func updateModelCatalog(from result: [String: Any]) {
         guard let data = result["data"] as? [[String: Any]] else { return }
 
@@ -1440,6 +1802,31 @@ final class CodexAppServerActionProvider: ActionProvider {
             }
             return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
         }
+    }
+
+    private func updateCollaborationModes(from result: [String: Any]) {
+        let data = result["data"] as? [[String: Any]] ?? []
+        collaborationModes = data.compactMap {
+            ($0["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+    }
+
+    private func updateExperimentalFeatures(from result: [String: Any]) {
+        let data = result["data"] as? [[String: Any]] ?? []
+        experimentalFeatures = data.compactMap {
+            ($0["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+    }
+
+    private func appendDebugEvent(_ event: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let formattedEvent = "[\(timestamp)] \(event)"
+        debugEvents.append(formattedEvent)
+        if debugEvents.count > 60 {
+            debugEvents.removeFirst(debugEvents.count - 60)
+        }
+        OrbitSupportLog.append("codex", formattedEvent)
+        notifyStateChanged()
     }
 
     private func modelOption(for model: String) -> OrbitCodexModelOption? {
@@ -1556,6 +1943,8 @@ final class CodexAppServerActionProvider: ActionProvider {
 
     private func teardownProcess() {
         intentionalShutdownInProgress = false
+        loginRequestTimeoutTask?.cancel()
+        loginRequestTimeoutTask = nil
         startupTimeoutTask?.cancel()
         startupTimeoutTask = nil
         stdoutHandle?.readabilityHandler = nil
@@ -1581,7 +1970,10 @@ final class CodexAppServerActionProvider: ActionProvider {
         hasOpenedBrowserInCurrentTurn = false
         streamedCommentaryBuffer = ""
         hasEmittedEarlyCommentary = false
+        lastEmittedLiveCommentary = nil
         pendingModelCatalogRequestID = nil
+        pendingCollaborationModeRequestID = nil
+        pendingExperimentalFeatureRequestID = nil
         pendingAccountReadRequestID = nil
         pendingLoginRequestID = nil
         pendingLogoutRequestID = nil

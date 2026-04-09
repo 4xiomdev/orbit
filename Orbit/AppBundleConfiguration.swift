@@ -23,6 +23,7 @@ enum AppBundleConfiguration {
             }
         }
 
+#if DEBUG
         if let localSecretsPath = Bundle.main.path(forResource: "LocalSecrets", ofType: "plist"),
            let localSecrets = NSDictionary(contentsOfFile: localSecretsPath),
            let value = localSecrets[key] as? String {
@@ -31,6 +32,7 @@ enum AppBundleConfiguration {
                 return trimmedValue
             }
         }
+#endif
 
         guard let resourceInfoPath = Bundle.main.path(forResource: "Info", ofType: "plist"),
               let resourceInfo = NSDictionary(contentsOfFile: resourceInfoPath),
@@ -71,5 +73,47 @@ enum AppBundleConfiguration {
                 .replacingOccurrences(of: "([a-z0-9])([A-Z])", with: "$1_$2", options: .regularExpression)
                 .uppercased()
         }
+    }
+}
+
+enum OrbitSupportLog {
+    private static let logDirectoryName = "Orbit"
+    private static let logFileName = "orbit-support.log"
+
+    static func append(_ category: String, _ message: String) {
+        guard let logURL = logFileURL() else { return }
+
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] [\(category)] \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: logURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+
+            if !FileManager.default.fileExists(atPath: logURL.path) {
+                FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            }
+
+            let handle = try FileHandle(forWritingTo: logURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } catch {
+            NSLog("OrbitSupportLog error: %@", error.localizedDescription)
+        }
+    }
+
+    static func currentLogFilePath() -> String? {
+        logFileURL()?.path
+    }
+
+    private static func logFileURL() -> URL? {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent(logDirectoryName, isDirectory: true)
+            .appendingPathComponent(logFileName)
     }
 }

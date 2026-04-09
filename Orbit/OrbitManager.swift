@@ -64,6 +64,11 @@ final class OrbitManager: ObservableObject {
     @Published private(set) var codexAccountSummary: String?
     @Published private(set) var recentActionUpdates: [String] = []
     @Published private(set) var showCodexActivityOverlay: Bool = false
+    @Published private(set) var codexDebugEvents: [String] = []
+    @Published private(set) var codexCollaborationModes: [String] = []
+    @Published private(set) var codexExperimentalFeatures: [String] = []
+    @Published private(set) var codexActiveTurnSummary: String?
+    @Published private(set) var pendingToolPrompt: OrbitToolPrompt?
 
     @Published var onboardingPromptText: String = ""
     @Published var onboardingPromptOpacity: Double = 0.0
@@ -76,15 +81,18 @@ final class OrbitManager: ObservableObject {
 
     private var textToSpeechProvider: any TextToSpeechProvider
     private let fallbackTextToSpeechProvider: any TextToSpeechProvider
+    private let desktopActuator = OrbitDesktopActuator()
     private let actionProvider = CodexAppServerActionProvider()
     private var lastCodexScreenCapture: OrbitScreenCapture?
 
     private var currentResponseTask: Task<Void, Never>?
+    private var desktopActuationTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
+    private var applicationActivationCancellable: AnyCancellable?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     private var voicePresetCancellable: AnyCancellable?
     private var appleVoiceCancellable: AnyCancellable?
@@ -99,6 +107,7 @@ final class OrbitManager: ObservableObject {
     private var actionAcknowledgementTask: Task<Void, Never>?
     private var codexWarmupGeneration: Int = 0
     private var hasSpokenActionAcknowledgement = false
+    private var escapeKeyMonitor: Any?
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -108,6 +117,10 @@ final class OrbitManager: ObservableObject {
 
     var hasUsableScreenAccessPermission: Bool {
         hasScreenContentPermission || hasScreenRecordingPermission
+    }
+
+    var canInterruptCodexAction: Bool {
+        actionProvider.canInterruptCurrentAction || desktopActuationTask != nil
     }
 
     var setupStage: OrbitSetupStage {
@@ -202,6 +215,10 @@ final class OrbitManager: ObservableObject {
         self.availableCodexEfforts = actionProvider.supportedEffortsForSelectedModel
         self.codexAuthState = actionProvider.authState
         self.codexAccountSummary = actionProvider.accountSummary
+        self.codexDebugEvents = actionProvider.debugEvents
+        self.codexCollaborationModes = actionProvider.collaborationModes
+        self.codexExperimentalFeatures = actionProvider.experimentalFeatures
+        self.codexActiveTurnSummary = actionProvider.activeTurnSummary
         self.openAICloudCredentialState = OrbitOpenAIKeychainStore.resolvedAPIKey().map { .connected(source: $0.source) } ?? .missing
         self.actionProvider.stateDidChange = { [weak self] in
             Task { @MainActor [weak self] in
@@ -218,6 +235,8 @@ final class OrbitManager: ObservableObject {
         bindAudioPowerLevel()
         bindShortcutTransitions()
         bindSettings()
+        bindApplicationActivation()
+        bindInterruptShortcut()
         refreshCloudCredentialState()
         ensureCodexSessionReady(forceFreshSession: true)
         Task { @MainActor [weak self] in
@@ -267,16 +286,23 @@ final class OrbitManager: ObservableObject {
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        desktopActuationTask?.cancel()
+        desktopActuationTask = nil
         actionProvider.cancelCurrentAction()
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
+        applicationActivationCancellable?.cancel()
         voicePresetCancellable?.cancel()
         appleVoiceCancellable?.cancel()
         showCursorCancellable?.cancel()
         codexModelCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        if let escapeKeyMonitor {
+            NSEvent.removeMonitor(escapeKeyMonitor)
+            self.escapeKeyMonitor = nil
+        }
     }
 
     func refreshAllPermissions() {
@@ -381,15 +407,8 @@ final class OrbitManager: ObservableObject {
     }
 
     private func updateScreenAccessDiagnostic(lastError: String? = nil) {
-        let preflight = CGPreflightScreenCaptureAccess()
-        let persistedScreenRecording = WindowPositionManager.hasPreviouslyConfirmedScreenRecordingPermission()
-        let persistedScreenContent = UserDefaults.standard.bool(forKey: "hasScreenContentPermission")
-        let usable = hasUsableScreenAccessPermission
-        var summary = "debug: preflight=\(preflight) recording=\(hasScreenRecordingPermission) content=\(hasScreenContentPermission) storedRecording=\(persistedScreenRecording) storedContent=\(persistedScreenContent) usable=\(usable)"
-        if let lastError, !lastError.isEmpty {
-            summary += " error=\(lastError)"
-        }
-        screenAccessDiagnosticSummary = summary
+        _ = lastError
+        screenAccessDiagnosticSummary = nil
     }
 
     // MARK: - Private
@@ -409,10 +428,56 @@ final class OrbitManager: ObservableObject {
     /// user grants them in System Settings. Screen Recording is the exception —
     /// macOS requires an app restart for that one to take effect.
     private func startPermissionPolling() {
+        accessibilityCheckTimer?.invalidate()
+        accessibilityCheckTimer = nil
+
+        // Once the app has already made it through setup, rely on lighter
+        // refresh triggers instead of constantly hitting TCC in the background.
+        guard !hasCompletedOnboarding, setupStage == .permissions else {
+            return
+        }
+
         accessibilityCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.refreshAllPermissions()
+                guard let self else { return }
+                self.refreshAllPermissions()
+                if self.setupStage != .permissions || self.hasCompletedOnboarding {
+                    self.accessibilityCheckTimer?.invalidate()
+                    self.accessibilityCheckTimer = nil
+                }
             }
+        }
+    }
+
+    private func bindApplicationActivation() {
+        applicationActivationCancellable = NotificationCenter.default
+            .publisher(for: NSApplication.didBecomeActiveNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.refreshAllPermissions()
+                if self.setupStage == .permissions && !self.hasCompletedOnboarding {
+                    self.startPermissionPolling()
+                } else {
+                    self.accessibilityCheckTimer?.invalidate()
+                    self.accessibilityCheckTimer = nil
+                }
+            }
+    }
+
+    private func bindInterruptShortcut() {
+        if let escapeKeyMonitor {
+            NSEvent.removeMonitor(escapeKeyMonitor)
+            self.escapeKeyMonitor = nil
+        }
+
+        escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            guard event.keyCode == 53 else { return event }
+            guard self.isOverlayVisible || self.showCodexActivityOverlay else { return event }
+            guard self.actionProvider.canInterruptCurrentAction else { return event }
+            self.interruptCurrentAction()
+            return nil
         }
     }
 
@@ -512,6 +577,8 @@ final class OrbitManager: ObservableObject {
     }
 
     private func refreshTextToSpeechProvider() {
+        textToSpeechProvider.stopPlayback()
+        fallbackTextToSpeechProvider.stopPlayback()
         textToSpeechProvider = OrbitTTSProviderFactory.makePrimaryProvider(for: settings.voicePreset)
         textToSpeechProviderDisplayName = textToSpeechProvider.displayName
         availableAppleVoices = []
@@ -602,10 +669,18 @@ final class OrbitManager: ObservableObject {
 
     private func submitTranscriptToActionProvider(transcript: String) {
         currentResponseTask?.cancel()
+        desktopActuationTask?.cancel()
+        desktopActuationTask = nil
         textToSpeechProvider.stopPlayback()
         fallbackTextToSpeechProvider.stopPlayback()
         isRunningOnboardingTour = false
-        resetActionPresentationForNewRequest()
+        pendingToolPrompt = nil
+        let shouldResetPresentation = !actionProvider.canInterruptCurrentAction
+        if shouldResetPresentation {
+            resetActionPresentationForNewRequest()
+        } else {
+            appendActionUpdate("steering current codex turn")
+        }
         applyActionProgress(
             OrbitActionProgress(
                 phase: .capturingScreen,
@@ -631,7 +706,9 @@ final class OrbitManager: ObservableObject {
                     screenshotLabel: nil,
                     cursorPointInImagePixels: nil,
                     imagePixelSize: nil,
-                    screenNumber: nil
+                    screenNumber: nil,
+                    frontmostApplicationName: currentFrontmostApplicationName(),
+                    frontmostWindowTitle: currentFocusedWindowTitle()
                 )
                 activeActionDetailLine = "continuing without screen context."
                 appendActionUpdate("continuing without screen context")
@@ -645,48 +722,63 @@ final class OrbitManager: ObservableObject {
                     self?.handleActionEvent(event)
                 }
             }
-
-            if self.voiceState == .processing {
-                self.voiceState = .idle
-            }
-            self.scheduleTransientHideIfNeeded()
         }
     }
 
     private func handleActionEvent(_ event: OrbitActionEvent) {
         switch event {
         case .phase(let progress):
+            pendingToolPrompt = nil
+            voiceState = .processing
             applyActionProgress(progress)
             showCodexActivityOverlayCard()
         case .commentary(let commentary):
             handleEarlyActionCommentary(commentary)
-        case .completed(let summary):
-            let parseResult = Self.parsePointingCoordinates(from: summary)
-            let spokenSummary = parseResult.spokenText.isEmpty ? "done." : parseResult.spokenText
-            let shortDetail = conciseDetailLine(from: spokenSummary)
+        case .liveUpdate(let update):
+            appendActionUpdate(update)
+            showCodexActivityOverlayCard()
+        case .toolPrompt(let prompt):
+            pendingToolPrompt = prompt
+            activeActionStatus = .waitingForApproval(prompt.title)
+            activeActionStatusSummary = OrbitActionPhase.waitingForChoice.summaryText
+            activeActionDetailLine = prompt.title
+            appendActionUpdate(prompt.title)
+            showCodexActivityOverlayCard()
+        case .interrupted(let summary):
+            let spokenSummary = conciseDetailLine(from: summary.isEmpty ? "stopped." : summary)
             cancelActionAcknowledgementFlow()
             textToSpeechProvider.stopPlayback()
             fallbackTextToSpeechProvider.stopPlayback()
+            desktopActuationTask?.cancel()
+            desktopActuationTask = nil
             activeActionProgress = OrbitActionProgress(
-                phase: .done,
-                detail: shortDetail,
+                phase: .interrupted,
+                detail: spokenSummary,
                 rawSource: summary
             )
-            activeActionStatus = .completed(spokenSummary)
-            activeActionStatusSummary = OrbitActionPhase.done.summaryText
-            activeActionDetailLine = shortDetail
-            appendActionUpdate(OrbitActionPhase.done.summaryText)
-            applyCodexPointDirective(parseResult)
+            activeActionStatus = .interrupted(spokenSummary)
+            activeActionStatusSummary = OrbitActionPhase.interrupted.summaryText
+            activeActionDetailLine = spokenSummary
+            appendActionUpdate("interrupted")
+            pendingToolPrompt = nil
+            voiceState = .idle
             showCodexActivityOverlayCard()
             scheduleCodexActivityOverlayDismiss()
-            Task {
-                try? await textToSpeechProvider.speakText(spokenSummary)
-            }
+            scheduleTransientHideIfNeeded()
+        case .completed(let summary):
+            cancelActionAcknowledgementFlow()
+            textToSpeechProvider.stopPlayback()
+            fallbackTextToSpeechProvider.stopPlayback()
+            pendingToolPrompt = nil
+            handleCompletedCodexSummary(summary)
         case .failed(let errorMessage):
             let shortDetail = conciseDetailLine(from: errorMessage)
             cancelActionAcknowledgementFlow()
             textToSpeechProvider.stopPlayback()
             fallbackTextToSpeechProvider.stopPlayback()
+            pendingToolPrompt = nil
+            desktopActuationTask?.cancel()
+            desktopActuationTask = nil
             activeActionProgress = OrbitActionProgress(
                 phase: .failed,
                 detail: shortDetail,
@@ -699,11 +791,35 @@ final class OrbitManager: ObservableObject {
             showCodexActivityOverlayCard()
             scheduleCodexActivityOverlayDismiss()
             Task {
-                try? await fallbackTextToSpeechProvider.speakText("i could not finish that action.")
+                await self.speakCompletionText(nil, fallback: "i could not finish that action.")
             }
         }
 
         refreshActionProviderPresentation()
+    }
+
+    private func handleCompletedCodexSummary(_ summary: String) {
+        let responseParse = Self.parseOrbitResponse(from: summary)
+        let spokenSummary = responseParse.spokenText.isEmpty ? "done." : responseParse.spokenText
+
+        let shortDetail = conciseDetailLine(from: spokenSummary)
+        activeActionProgress = OrbitActionProgress(
+            phase: .done,
+            detail: shortDetail,
+            rawSource: summary
+        )
+        activeActionStatus = .completed(spokenSummary)
+        activeActionStatusSummary = OrbitActionPhase.done.summaryText
+        activeActionDetailLine = shortDetail
+        appendActionUpdate(OrbitActionPhase.done.summaryText)
+        if let pointDirective = responseParse.pointDirective {
+            applyCodexPointDirective(pointDirective)
+        }
+        showCodexActivityOverlayCard()
+        scheduleCodexActivityOverlayDismiss()
+        Task {
+            await self.speakCompletionText(spokenSummary, fallback: nil)
+        }
     }
 
     private func buildPrimaryScreenLabel(
@@ -739,7 +855,9 @@ final class OrbitManager: ObservableObject {
                     width: activeScreenCapture.screenshotWidthInPixels,
                     height: activeScreenCapture.screenshotHeightInPixels
                 ),
-                screenNumber: activeScreenCapture.screenNumber
+                screenNumber: activeScreenCapture.screenNumber,
+                frontmostApplicationName: currentFrontmostApplicationName(),
+                frontmostWindowTitle: currentFocusedWindowTitle()
             )
         } catch {
             lastCodexScreenCapture = nil
@@ -757,29 +875,26 @@ final class OrbitManager: ObservableObject {
 
     private func applyCodexPointDirective(_ parseResult: PointingParseResult) {
         guard let coordinate = parseResult.coordinate,
-              let activeScreenCapture = lastCodexScreenCapture else {
-            return
-        }
+              let resolvedTarget = resolveGlobalScreenTarget(
+                fromImagePoint: coordinate,
+                screenNumber: parseResult.screenNumber
+              ) else { return }
 
-        let screenshotWidth = CGFloat(activeScreenCapture.screenshotWidthInPixels)
-        let screenshotHeight = CGFloat(activeScreenCapture.screenshotHeightInPixels)
-        let displayWidth = CGFloat(activeScreenCapture.displayWidthInPoints)
-        let displayHeight = CGFloat(activeScreenCapture.displayHeightInPoints)
-        let displayFrame = activeScreenCapture.displayFrame
-
-        let clampedX = max(0, min(coordinate.x, screenshotWidth))
-        let clampedY = max(0, min(coordinate.y, screenshotHeight))
-        let displayLocalX = clampedX * (displayWidth / max(screenshotWidth, 1))
-        let displayLocalY = clampedY * (displayHeight / max(screenshotHeight, 1))
-        let appKitY = displayHeight - displayLocalY
-        let globalLocation = CGPoint(
-            x: displayLocalX + displayFrame.origin.x,
-            y: appKitY + displayFrame.origin.y
-        )
-
-        detectedElementScreenLocation = globalLocation
-        detectedElementDisplayFrame = displayFrame
+        detectedElementScreenLocation = resolvedTarget.location
+        detectedElementDisplayFrame = resolvedTarget.displayFrame
         detectedElementBubbleText = parseResult.elementLabel
+    }
+
+    private func applyDesktopPreview(for step: OrbitDesktopActionStep) {
+        guard let coordinate = step.imagePoint,
+              let resolvedTarget = resolveGlobalScreenTarget(
+                fromImagePoint: coordinate,
+                screenNumber: step.screen
+              ) else { return }
+
+        detectedElementScreenLocation = resolvedTarget.location
+        detectedElementDisplayFrame = resolvedTarget.displayFrame
+        detectedElementBubbleText = step.previewLabel
     }
 
     private func currentCursorPointInScreenshotPixels(
@@ -807,11 +922,161 @@ final class OrbitManager: ObservableObject {
         return CGPoint(x: screenshotX, y: screenshotY)
     }
 
+    private struct OrbitResolvedScreenTarget {
+        let location: CGPoint
+        let displayFrame: CGRect
+    }
+
+    private func resolveGlobalScreenTarget(
+        fromImagePoint coordinate: CGPoint,
+        screenNumber: Int?
+    ) -> OrbitResolvedScreenTarget? {
+        guard let activeScreenCapture = lastCodexScreenCapture else { return nil }
+
+        if let screenNumber, activeScreenCapture.screenNumber != screenNumber {
+            return nil
+        }
+
+        let screenshotWidth = CGFloat(activeScreenCapture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(activeScreenCapture.screenshotHeightInPixels)
+        let displayWidth = CGFloat(activeScreenCapture.displayWidthInPoints)
+        let displayHeight = CGFloat(activeScreenCapture.displayHeightInPoints)
+        let displayFrame = activeScreenCapture.displayFrame
+
+        let clampedX = max(0, min(coordinate.x, screenshotWidth))
+        let clampedY = max(0, min(coordinate.y, screenshotHeight))
+        let displayLocalX = clampedX * (displayWidth / max(screenshotWidth, 1))
+        let displayLocalY = clampedY * (displayHeight / max(screenshotHeight, 1))
+        let appKitY = displayHeight - displayLocalY
+        let globalLocation = CGPoint(
+            x: displayLocalX + displayFrame.origin.x,
+            y: appKitY + displayFrame.origin.y
+        )
+
+        return OrbitResolvedScreenTarget(location: globalLocation, displayFrame: displayFrame)
+    }
+
+    private func desktopPreviewDelay(for step: OrbitDesktopActionStep, target: CGPoint?) -> TimeInterval {
+        guard step.imagePoint != nil, let target else {
+            return 0.28
+        }
+
+        let mouseLocation = NSEvent.mouseLocation
+        let distance = hypot(target.x - mouseLocation.x, target.y - mouseLocation.y)
+        let flightDurationSeconds = min(max(distance / 800.0, 0.6), 1.4)
+        return flightDurationSeconds + 0.14
+    }
+
+    private func beginDesktopActuation(
+        _ intent: OrbitDesktopActuationIntent,
+        spokenSummary: String,
+        rawSummary: String
+    ) {
+        desktopActuationTask?.cancel()
+        voiceState = .processing
+        showCodexActivityOverlayCard()
+        appendActionUpdate("desktop action ready")
+
+        desktopActuationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.desktopActuationTask = nil
+                self.refreshActionProviderPresentation()
+            }
+
+            do {
+                for step in intent.steps {
+                    try Task.checkCancellation()
+
+                    let resolvedTarget = step.imagePoint.flatMap {
+                        self.resolveGlobalScreenTarget(fromImagePoint: $0, screenNumber: step.screen)
+                    }
+
+                    let previewLabel = step.previewLabel
+                    self.activeActionProgress = OrbitActionProgress(
+                        phase: .previewingAction,
+                        detail: previewLabel,
+                        rawSource: rawSummary
+                    )
+                    self.activeActionStatus = .running
+                    self.activeActionStatusSummary = OrbitActionPhase.previewingAction.summaryText
+                    self.activeActionDetailLine = previewLabel
+                    self.appendActionUpdate(previewLabel)
+                    if step.imagePoint != nil {
+                        self.applyDesktopPreview(for: step)
+                    }
+
+                    try await Task.sleep(nanoseconds: UInt64(self.desktopPreviewDelay(for: step, target: resolvedTarget?.location) * 1_000_000_000))
+                    try Task.checkCancellation()
+
+                    let executionLabel = step.executionLabel
+                    self.activeActionProgress = OrbitActionProgress(
+                        phase: .executingDesktopAction,
+                        detail: executionLabel,
+                        rawSource: rawSummary
+                    )
+                    self.activeActionStatus = .running
+                    self.activeActionStatusSummary = OrbitActionPhase.executingDesktopAction.summaryText
+                    self.activeActionDetailLine = executionLabel
+                    self.appendActionUpdate(executionLabel)
+
+                    try await self.desktopActuator.perform(step, at: resolvedTarget?.location)
+                    try await Task.sleep(nanoseconds: 180_000_000)
+                }
+
+                let shortDetail = self.conciseDetailLine(from: spokenSummary)
+                self.activeActionProgress = OrbitActionProgress(
+                    phase: .done,
+                    detail: shortDetail,
+                    rawSource: rawSummary
+                )
+                self.activeActionStatus = .completed(spokenSummary)
+                self.activeActionStatusSummary = OrbitActionPhase.done.summaryText
+                self.activeActionDetailLine = shortDetail
+                self.appendActionUpdate(OrbitActionPhase.done.summaryText)
+                self.showCodexActivityOverlayCard()
+                self.scheduleCodexActivityOverlayDismiss()
+                await self.speakCompletionText(spokenSummary, fallback: nil)
+            } catch is CancellationError {
+                self.activeActionProgress = OrbitActionProgress(
+                    phase: .interrupted,
+                    detail: "desktop action interrupted.",
+                    rawSource: rawSummary
+                )
+                self.activeActionStatus = .interrupted("desktop action interrupted.")
+                self.activeActionStatusSummary = OrbitActionPhase.interrupted.summaryText
+                self.activeActionDetailLine = "desktop action interrupted."
+                self.appendActionUpdate("desktop action interrupted")
+                self.showCodexActivityOverlayCard()
+                self.scheduleCodexActivityOverlayDismiss()
+                self.voiceState = .idle
+            } catch {
+                let detail = self.conciseDetailLine(from: error.localizedDescription)
+                self.activeActionProgress = OrbitActionProgress(
+                    phase: .failed,
+                    detail: detail,
+                    rawSource: rawSummary
+                )
+                self.activeActionStatus = .failed(error.localizedDescription)
+                self.activeActionStatusSummary = OrbitActionPhase.failed.summaryText
+                self.activeActionDetailLine = detail
+                self.appendActionUpdate("desktop action failed")
+                self.showCodexActivityOverlayCard()
+                self.scheduleCodexActivityOverlayDismiss()
+                await self.speakCompletionText(nil, fallback: error.localizedDescription)
+            }
+        }
+    }
+
     private func refreshActionProviderPresentation() {
         availableCodexModels = actionProvider.availableModels
         availableCodexEfforts = actionProvider.supportedEffortsForSelectedModel
         codexAuthState = actionProvider.authState
         codexAccountSummary = actionProvider.accountSummary
+        codexDebugEvents = actionProvider.debugEvents
+        codexCollaborationModes = actionProvider.collaborationModes
+        codexExperimentalFeatures = actionProvider.experimentalFeatures
+        codexActiveTurnSummary = actionProvider.activeTurnSummary
         reconcileCodexSelectionIfNeeded()
         codexSessionSummary = actionProvider.sessionStatusSummary
         codexConfigurationSummary = actionProvider.configurationSummary
@@ -841,6 +1106,7 @@ final class OrbitManager: ObservableObject {
         activeActionStatus = .running
         activeActionStatusSummary = nil
         activeActionDetailLine = nil
+        pendingToolPrompt = nil
         codexOverlayDismissTask?.cancel()
         actionAcknowledgementTask?.cancel()
         actionAcknowledgementTask = nil
@@ -850,15 +1116,17 @@ final class OrbitManager: ObservableObject {
     private func applyActionProgress(_ progress: OrbitActionProgress) {
         activeActionProgress = progress
 
-        if progress.phase == .waitingForApproval {
+        if progress.phase == .waitingForApproval || progress.phase == .waitingForChoice {
             activeActionStatus = .waitingForApproval(progress.resolvedDetail ?? progress.phase.summaryText)
+        } else if progress.phase == .interrupted {
+            activeActionStatus = .interrupted(progress.resolvedDetail ?? progress.phase.summaryText)
         } else {
             activeActionStatus = .running
         }
 
         activeActionStatusSummary = progress.phase.summaryText
         activeActionDetailLine = progress.resolvedDetail
-        appendActionUpdate(progress.phase.summaryText)
+        appendActionUpdate(progress.resolvedDetail ?? progress.phase.summaryText)
     }
 
     private func handleEarlyActionCommentary(_ commentary: String) {
@@ -874,9 +1142,27 @@ final class OrbitManager: ObservableObject {
             do {
                 try await textToSpeechProvider.speakText(acknowledgement)
             } catch {
-                try? await fallbackTextToSpeechProvider.speakText(acknowledgement)
+                OrbitSupportLog.append("voice", "failed early commentary speech: \(error.localizedDescription)")
             }
         }
+    }
+
+    private func speakCompletionText(_ primary: String?, fallback: String?) async {
+        let trimmedPrimary = primary?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedFallback = fallback?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalText = (trimmedPrimary?.isEmpty == false ? trimmedPrimary : trimmedFallback) ?? "done."
+
+        voiceState = .responding
+
+        do {
+            try await textToSpeechProvider.speakText(finalText)
+        } catch {
+            let visibleError = trimmedFallback?.isEmpty == false ? trimmedFallback! : error.localizedDescription
+            OrbitSupportLog.append("voice", "speech failed: \(visibleError)")
+        }
+
+        voiceState = .idle
+        scheduleTransientHideIfNeeded()
     }
 
     private func scheduleActionAcknowledgementFallback() {
@@ -920,6 +1206,34 @@ final class OrbitManager: ObservableObject {
         guard cleaned.count > 72 else { return cleaned }
         let cutoffIndex = cleaned.index(cleaned.startIndex, offsetBy: 69)
         return cleaned[..<cutoffIndex].trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    }
+
+    private func currentFrontmostApplicationName() -> String? {
+        NSWorkspace.shared.frontmostApplication?.localizedName
+    }
+
+    private func currentFocusedWindowTitle() -> String? {
+        guard hasAccessibilityPermission,
+              let frontApp = NSWorkspace.shared.frontmostApplication,
+              frontApp.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+            return nil
+        }
+
+        let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
+        var focusedWindowValue: AnyObject?
+        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &focusedWindowValue) == .success,
+              let focusedWindow = focusedWindowValue else {
+            return nil
+        }
+
+        var titleValue: AnyObject?
+        guard AXUIElementCopyAttributeValue(focusedWindow as! AXUIElement, kAXTitleAttribute as CFString, &titleValue) == .success,
+              let title = titleValue as? String else {
+            return nil
+        }
+
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     func selectVoicePreset(_ preset: OrbitVoicePreset, markSetupComplete: Bool = true) {
@@ -1025,8 +1339,48 @@ final class OrbitManager: ObservableObject {
         }
     }
 
+    func interruptCurrentAction() {
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        desktopActuationTask?.cancel()
+        desktopActuationTask = nil
+        orbitDictationManager.cancelCurrentDictation()
+        textToSpeechProvider.stopPlayback()
+        fallbackTextToSpeechProvider.stopPlayback()
+        actionProvider.cancelCurrentAction()
+        voiceState = .idle
+        activeActionProgress = OrbitActionProgress(
+            phase: .interrupted,
+            detail: "stopping the current action.",
+            rawSource: "desktop action interrupted"
+        )
+        activeActionStatus = .interrupted("stopping the current action.")
+        activeActionStatusSummary = OrbitActionPhase.interrupted.summaryText
+        activeActionDetailLine = "stopping the current action."
+        appendActionUpdate("interrupting current codex turn")
+        showCodexActivityOverlayCard()
+        refreshActionProviderPresentation()
+    }
+
+    func answerToolPrompt(with option: String) {
+        guard let pendingToolPrompt else { return }
+        actionProvider.respondToToolPrompt(
+            requestID: pendingToolPrompt.requestID,
+            questionID: pendingToolPrompt.questionID,
+            answer: option
+        )
+        appendActionUpdate("answered: \(option)")
+        self.pendingToolPrompt = nil
+        voiceState = .processing
+        refreshActionProviderPresentation()
+    }
+
     func reopenCodexLogin() {
-        actionProvider.reopenManagedLoginURL()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await actionProvider.beginManagedLogin()
+            refreshActionProviderPresentation()
+        }
     }
 
     func signOutCodexAccount() {
@@ -1105,6 +1459,11 @@ final class OrbitManager: ObservableObject {
         let screenNumber: Int?
     }
 
+    struct OrbitResponseParseResult {
+        let spokenText: String
+        let pointDirective: PointingParseResult?
+    }
+
     /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Codex's response.
     /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
     static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
@@ -1145,6 +1504,17 @@ final class OrbitManager: ObservableObject {
             coordinate: CGPoint(x: x, y: y),
             elementLabel: elementLabel,
             screenNumber: screenNumber
+        )
+    }
+
+    static func parseOrbitResponse(from responseText: String) -> OrbitResponseParseResult {
+        let pointDirective = parsePointingCoordinates(from: responseText)
+        let pointResult: PointingParseResult? = pointDirective.coordinate == nil && pointDirective.elementLabel == nil
+            ? nil
+            : pointDirective
+        return OrbitResponseParseResult(
+            spokenText: pointDirective.spokenText,
+            pointDirective: pointResult
         )
     }
 
@@ -1228,7 +1598,7 @@ final class OrbitManager: ObservableObject {
         do {
             try await textToSpeechProvider.speakText(message)
         } catch {
-            try? await fallbackTextToSpeechProvider.speakText(message)
+            OrbitSupportLog.append("voice", "failed onboarding speech: \(error.localizedDescription)")
         }
     }
 

@@ -114,23 +114,6 @@ struct OrbitPanelView: View {
                     .padding(.vertical, 4)
             }
 
-            if shouldShowPermissionRecoveryHint {
-                Text("If you installed a fresh Orbit build, macOS may treat it as a new app. Re-enable Orbit in Privacy & Security, then relaunch Orbit.")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 2)
-            }
-
-            if let diagnostic = orbitManager.screenAccessDiagnosticSummary,
-               !orbitManager.hasUsableScreenAccessPermission {
-                Text(diagnostic)
-                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                    .foregroundColor(DS.Colors.textTertiary.opacity(0.9))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 4)
-            }
-
         }
     }
 
@@ -478,25 +461,49 @@ struct OrbitPanelView: View {
 
                 Spacer(minLength: 8)
 
-                Button {
-                    orbitManager.reconnectCodexSession()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundColor(DS.Colors.textSecondary)
-                        .frame(width: 28, height: 28)
-                        .orbitGlassCard(
-                            shape: Circle(),
-                            fillOpacity: 0.24,
-                            borderOpacity: 0.12,
-                            highlightOpacity: 0.16,
-                            shadowOpacity: 0.08,
-                            glowOpacity: 0.01
-                        )
+                HStack(spacing: 6) {
+                    if orbitManager.canInterruptCodexAction {
+                        Button {
+                            orbitManager.interruptCurrentAction()
+                        } label: {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundColor(DS.Colors.textSecondary)
+                                .frame(width: 28, height: 28)
+                                .orbitGlassCard(
+                                    shape: Circle(),
+                                    fillOpacity: 0.24,
+                                    borderOpacity: 0.12,
+                                    highlightOpacity: 0.16,
+                                    shadowOpacity: 0.08,
+                                    glowOpacity: 0.01
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .pointerCursor()
+                        .help("Interrupt Codex")
+                    }
+
+                    Button {
+                        orbitManager.reconnectCodexSession()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundColor(DS.Colors.textSecondary)
+                            .frame(width: 28, height: 28)
+                            .orbitGlassCard(
+                                shape: Circle(),
+                                fillOpacity: 0.24,
+                                borderOpacity: 0.12,
+                                highlightOpacity: 0.16,
+                                shadowOpacity: 0.08,
+                                glowOpacity: 0.01
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .help("Reconnect Codex")
                 }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .help("Reconnect Codex")
 
                 DSQuietStatusChip(title: actionStatusLabel, tint: codexStatusColor)
             }
@@ -510,7 +517,54 @@ struct OrbitPanelView: View {
                 Text(detailLine)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
+                    .lineLimit(2)
+            }
+
+            if let activeTurnSummary = orbitManager.codexActiveTurnSummary, !activeTurnSummary.isEmpty {
+                Text(activeTurnSummary)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(DS.Colors.textTertiary.opacity(0.92))
                     .lineLimit(1)
+            }
+
+            if let pendingToolPrompt = orbitManager.pendingToolPrompt {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(pendingToolPrompt.title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(DS.Colors.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let detail = pendingToolPrompt.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    VStack(spacing: 6) {
+                        ForEach(pendingToolPrompt.options, id: \.self) { option in
+                            primaryChoiceButton(option) {
+                                orbitManager.answerToolPrompt(with: option)
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            } else if !orbitManager.recentActionUpdates.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(Array(orbitManager.recentActionUpdates.suffix(4).enumerated()), id: \.offset) { _, update in
+                        HStack(alignment: .top, spacing: 6) {
+                            Circle()
+                                .fill(Color.white.opacity(0.55))
+                                .frame(width: 4, height: 4)
+                                .padding(.top, 5)
+                            Text(update)
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundColor(DS.Colors.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
             }
         }
         .padding(.vertical, 2)
@@ -725,7 +779,7 @@ struct OrbitPanelView: View {
                     tint: cloudVoiceStatusTint
                 )
 
-                Button("Replace") {
+                Button(openAIKeyActionTitle) {
                     openAIAPIKeyDraft = ""
                     showAPIKeyDialog = true
                 }
@@ -752,7 +806,7 @@ struct OrbitPanelView: View {
 
     private var apiKeyDialogContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Replace OpenAI Key")
+            Text(openAIKeyDialogTitle)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(.primary)
 
@@ -806,6 +860,24 @@ struct OrbitPanelView: View {
             .labelsHidden()
             .tint(Color.white.opacity(0.8))
             .scaleEffect(0.8)
+        }
+    }
+
+    private var openAIKeyActionTitle: String {
+        switch orbitManager.openAICloudCredentialState {
+        case .connected:
+            return "Replace"
+        case .missing, .validating, .invalid, .networkError:
+            return "Add"
+        }
+    }
+
+    private var openAIKeyDialogTitle: String {
+        switch orbitManager.openAICloudCredentialState {
+        case .connected:
+            return "Replace OpenAI Key"
+        case .missing, .validating, .invalid, .networkError:
+            return "Add OpenAI Key"
         }
     }
 
@@ -929,6 +1001,34 @@ struct OrbitPanelView: View {
 
             Divider()
 
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Codex Debug")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundColor(.secondary)
+
+                if let activeTurnSummary = orbitManager.codexActiveTurnSummary, !activeTurnSummary.isEmpty {
+                    Text(activeTurnSummary)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+
+                if !orbitManager.codexCollaborationModes.isEmpty {
+                    Text("modes: \(orbitManager.codexCollaborationModes.joined(separator: ", "))")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !orbitManager.codexDebugEvents.isEmpty {
+                    Text(orbitManager.codexDebugEvents.suffix(4).joined(separator: "\n"))
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Divider()
+
             Text("Open source under MIT license")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(.secondary)
@@ -1046,6 +1146,27 @@ struct OrbitPanelView: View {
         .pointerCursor()
     }
 
+    private func primaryChoiceButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(DS.Colors.textPrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 9)
+                .orbitGlassCard(
+                    shape: RoundedRectangle(cornerRadius: 12, style: .continuous),
+                    fillOpacity: 0.18,
+                    borderOpacity: 0.12,
+                    highlightOpacity: 0.16,
+                    shadowOpacity: 0.08,
+                    glowOpacity: 0.01
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
     private var rowDivider: some View {
         Rectangle()
             .fill(Color.white.opacity(0.08))
@@ -1091,6 +1212,8 @@ struct OrbitPanelView: View {
             return "Codex voice shell"
         case .failed:
             return "Codex needs attention"
+        case .interrupted:
+            return "Codex interrupted"
         case .running, .waitingForApproval, .completed:
             return "Live Codex session"
         }
@@ -1108,6 +1231,8 @@ struct OrbitPanelView: View {
             return DS.Colors.warning
         case .completed:
             return DS.Colors.success
+        case .interrupted:
+            return DS.Colors.warning
         case .failed:
             return DS.Colors.destructive
         case .idle:
@@ -1145,6 +1270,8 @@ struct OrbitPanelView: View {
             return "Waiting"
         case .completed:
             return "Done"
+        case .interrupted:
+            return "Stopped"
         case .failed:
             return "Issue"
         case .idle:
@@ -1177,6 +1304,8 @@ struct OrbitPanelView: View {
             return "Waiting"
         case .completed:
             return "Done"
+        case .interrupted:
+            return "Stopped"
         case .failed:
             return "Issue"
         }
@@ -1192,6 +1321,8 @@ struct OrbitPanelView: View {
             return DS.Colors.warning
         case .completed:
             return DS.Colors.success
+        case .interrupted:
+            return DS.Colors.warning
         case .failed:
             return DS.Colors.destructive
         }
@@ -1220,7 +1351,7 @@ struct OrbitPanelView: View {
                 return "starting the live codex session."
             }
             return nil
-        case .running, .waitingForApproval, .completed, .failed:
+        case .running, .waitingForApproval, .completed, .failed, .interrupted:
             return nil
         }
     }
@@ -1243,6 +1374,8 @@ struct OrbitPanelView: View {
             return "waiting for approval"
         case .completed:
             return "done"
+        case .interrupted:
+            return "interrupted"
         case .failed:
             return "failed"
         }
@@ -1366,11 +1499,6 @@ struct OrbitPanelView: View {
             },
             alternateTitle: "Open Settings"
         )
-    }
-
-    private var shouldShowPermissionRecoveryHint: Bool {
-        orbitManager.hasMicrophonePermission
-            && (!orbitManager.hasAccessibilityPermission || !orbitManager.hasUsableScreenAccessPermission)
     }
 
     private func relaunchOrbit() {

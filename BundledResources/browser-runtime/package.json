@@ -1,0 +1,11 @@
+{
+  "name": "orbit-browser-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned browser MCP runtime for Orbit",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@playwright/mcp": "0.0.70",
+    "chrome-devtools-mcp": "0.21.0"
+  }
+}

@@ -17,9 +17,60 @@ if [[ -z "${CONSOLE_UID}" ]]; then
     exit 0
 fi
 
-# Give LaunchServices a beat to settle after Installer finishes copying the app.
-sleep 1
+CONSOLE_HOME="$(dscl . -read "/Users/${CONSOLE_USER}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+if [[ -z "${CONSOLE_HOME}" ]]; then
+    exit 0
+fi
 
-/bin/launchctl asuser "${CONSOLE_UID}" /usr/bin/open -a "${APP_PATH}" || true
+LAUNCH_AGENTS_DIR="${CONSOLE_HOME}/Library/LaunchAgents"
+SUPPORT_DIR="${CONSOLE_HOME}/Library/Application Support/Orbit"
+HELPER_PATH="${SUPPORT_DIR}/launch-after-install.sh"
+PLIST_PATH="${LAUNCH_AGENTS_DIR}/com.orbit.codex.postinstall-open.plist"
+
+mkdir -p "${LAUNCH_AGENTS_DIR}" "${SUPPORT_DIR}"
+
+cat > "${HELPER_PATH}" <<'SCRIPT'
+#!/bin/bash
+set -euo pipefail
+
+APP_PATH="/Applications/Orbit.app"
+PLIST_PATH="${HOME}/Library/LaunchAgents/com.orbit.codex.postinstall-open.plist"
+
+sleep 2
+/usr/bin/open -a "${APP_PATH}" >/dev/null 2>&1 || true
+sleep 2
+/bin/launchctl bootout "gui/$(id -u)" "${PLIST_PATH}" >/dev/null 2>&1 || true
+rm -f "${PLIST_PATH}" "$0"
+SCRIPT
+
+chmod 755 "${HELPER_PATH}"
+chown "${CONSOLE_USER}:staff" "${HELPER_PATH}"
+
+cat > "${PLIST_PATH}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.orbit.codex.postinstall-open</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${HELPER_PATH}</string>
+    </array>
+    <key>LimitLoadToSessionType</key>
+    <array>
+        <string>Aqua</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+
+chown "${CONSOLE_USER}:staff" "${PLIST_PATH}"
+
+/bin/launchctl bootout "gui/${CONSOLE_UID}" "${PLIST_PATH}" >/dev/null 2>&1 || true
+/bin/launchctl bootstrap "gui/${CONSOLE_UID}" "${PLIST_PATH}" >/dev/null 2>&1 || true
+/bin/launchctl kickstart -k "gui/${CONSOLE_UID}/com.orbit.codex.postinstall-open" >/dev/null 2>&1 || true
 
 exit 0

@@ -3,6 +3,7 @@ worker/.dev.vars
 .DS_Store
 *.xcuserstate
 build/
+build-*
 releases/
 .claude/
 coding-plans/

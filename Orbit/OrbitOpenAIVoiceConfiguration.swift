@@ -3,14 +3,11 @@ import Security
 
 enum OrbitOpenAIAPIKeySource: Equatable {
     case keychain
-    case appConfiguration
 
     var summaryText: String {
         switch self {
         case .keychain:
             return "Connected"
-        case .appConfiguration:
-            return "Configured"
         }
     }
 }
@@ -52,8 +49,6 @@ enum OrbitOpenAICloudCredentialState: Equatable {
             switch source {
             case .keychain:
                 return "Stored in your Mac keychain."
-            case .appConfiguration:
-                return "Loaded from app configuration."
             }
         case .invalid:
             return "That OpenAI API key was rejected."
@@ -79,10 +74,6 @@ enum OrbitOpenAIKeychainStore {
     static func resolvedAPIKey() -> OrbitResolvedOpenAIAPIKey? {
         if let keychainKey = keychainAPIKey() {
             return OrbitResolvedOpenAIAPIKey(value: keychainKey, source: .keychain)
-        }
-
-        if let bundledKey = AppBundleConfiguration.stringValue(forKey: "OpenAIAPIKey") {
-            return OrbitResolvedOpenAIAPIKey(value: bundledKey, source: .appConfiguration)
         }
 
         return nil

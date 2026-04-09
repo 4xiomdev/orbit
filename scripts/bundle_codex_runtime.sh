@@ -2,6 +2,11 @@
 set -euo pipefail
 
 APP_BUNDLE_PATH="${1:-}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BROWSER_RUNTIME_SOURCE_DIR="${PROJECT_DIR}/BundledResources/browser-runtime"
+BUNDLED_SKILLS_SOURCE_DIR="${PROJECT_DIR}/BundledResources/skills"
+MODEL_INSTRUCTIONS_SOURCE_PATH="${PROJECT_DIR}/BundledResources/orbit-model-instructions.md"
 
 if [[ -z "${APP_BUNDLE_PATH}" ]]; then
     echo "usage: $0 /absolute/path/to/Orbit.app" >&2
@@ -73,6 +78,9 @@ fi
 RUNTIME_ROOT="${APP_BUNDLE_PATH}/Contents/Resources/CodexRuntime"
 BIN_ROOT="${RUNTIME_ROOT}/bin"
 VENDOR_DEST="${RUNTIME_ROOT}/vendor"
+BROWSER_TOOLS_ROOT="${RUNTIME_ROOT}/browser-tools"
+SKILLS_DEST="${APP_BUNDLE_PATH}/Contents/Resources/OrbitBundledSkills"
+MODEL_INSTRUCTIONS_DEST="${APP_BUNDLE_PATH}/Contents/Resources/OrbitModelInstructions.md"
 
 rm -rf "${RUNTIME_ROOT}"
 mkdir -p "${BIN_ROOT}" "${VENDOR_DEST}"
@@ -88,5 +96,63 @@ if [[ -x "${PACKAGE_ROOT}/bin/rg" ]]; then
 fi
 
 ditto "${VENDOR_ROOT}" "${VENDOR_DEST}"
+
+if [[ ! -f "${BROWSER_RUNTIME_SOURCE_DIR}/package.json" || ! -f "${BROWSER_RUNTIME_SOURCE_DIR}/package-lock.json" ]]; then
+    echo "Bundled browser runtime manifest is missing from ${BROWSER_RUNTIME_SOURCE_DIR}" >&2
+    exit 1
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+    echo "npm is required to bundle the browser MCP runtime." >&2
+    exit 1
+fi
+
+TMP_BROWSER_RUNTIME="$(mktemp -d)"
+cleanup_tmp_runtime() {
+    rm -rf "${TMP_BROWSER_RUNTIME}"
+}
+trap cleanup_tmp_runtime EXIT
+
+cp "${BROWSER_RUNTIME_SOURCE_DIR}/package.json" "${TMP_BROWSER_RUNTIME}/package.json"
+cp "${BROWSER_RUNTIME_SOURCE_DIR}/package-lock.json" "${TMP_BROWSER_RUNTIME}/package-lock.json"
+
+(
+    cd "${TMP_BROWSER_RUNTIME}"
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+)
+
+mkdir -p "${BROWSER_TOOLS_ROOT}"
+ditto "${TMP_BROWSER_RUNTIME}/node_modules" "${BROWSER_TOOLS_ROOT}/node_modules"
+
+cat > "${BIN_ROOT}/chrome-devtools-mcp" <<'EOF'
+#!/bin/sh
+set -eu
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+exec "${SCRIPT_DIR}/node" "${SCRIPT_DIR}/../browser-tools/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js" "$@"
+EOF
+chmod 755 "${BIN_ROOT}/chrome-devtools-mcp"
+
+cat > "${BIN_ROOT}/playwright-mcp" <<'EOF'
+#!/bin/sh
+set -eu
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+exec "${SCRIPT_DIR}/node" "${SCRIPT_DIR}/../browser-tools/node_modules/@playwright/mcp/cli.js" "$@"
+EOF
+chmod 755 "${BIN_ROOT}/playwright-mcp"
+
+rm -rf "${SKILLS_DEST}"
+if [[ -d "${BUNDLED_SKILLS_SOURCE_DIR}" ]]; then
+    ditto "${BUNDLED_SKILLS_SOURCE_DIR}" "${SKILLS_DEST}"
+else
+    echo "Bundled skills directory is missing from ${BUNDLED_SKILLS_SOURCE_DIR}" >&2
+    exit 1
+fi
+
+if [[ -f "${MODEL_INSTRUCTIONS_SOURCE_PATH}" ]]; then
+    cp "${MODEL_INSTRUCTIONS_SOURCE_PATH}" "${MODEL_INSTRUCTIONS_DEST}"
+else
+    echo "Bundled model instructions file is missing from ${MODEL_INSTRUCTIONS_SOURCE_PATH}" >&2
+    exit 1
+fi
 
 echo "Bundled Codex runtime into ${RUNTIME_ROOT}"

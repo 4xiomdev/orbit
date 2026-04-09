@@ -376,6 +376,9 @@ struct OrbitCursorOverlayView: View {
                     case .completed:
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(DS.Colors.success)
+                    case .interrupted:
+                        Image(systemName: "stop.circle.fill")
+                            .foregroundColor(DS.Colors.warning)
                     case .failed:
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundColor(DS.Colors.warning)
@@ -404,6 +407,23 @@ struct OrbitCursorOverlayView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
                     .lineLimit(2)
+            }
+
+            if !orbitManager.recentActionUpdates.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(Array(orbitManager.recentActionUpdates.suffix(4).enumerated()), id: \.offset) { _, update in
+                        HStack(alignment: .top, spacing: 6) {
+                            Circle()
+                                .fill(Color.white.opacity(0.55))
+                                .frame(width: 4, height: 4)
+                                .padding(.top, 4)
+                            Text(update)
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundColor(DS.Colors.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
             }
 
             if !orbitManager.codexConfigurationSummary.isEmpty {
@@ -440,6 +460,8 @@ struct OrbitCursorOverlayView: View {
             return "Waiting"
         case .completed:
             return "Done"
+        case .interrupted:
+            return "Stopped"
         case .failed:
             return "Issue"
         }
@@ -455,6 +477,8 @@ struct OrbitCursorOverlayView: View {
             return DS.Colors.warning
         case .completed:
             return DS.Colors.success
+        case .interrupted:
+            return DS.Colors.warning
         case .failed:
             return DS.Colors.warning
         }

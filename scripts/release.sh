@@ -9,11 +9,12 @@ export PATH="/opt/homebrew/bin:$PATH"
 SCHEME="Orbit"
 APP_NAME="Orbit"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="${PROJECT_DIR}/build"
+BUILD_DIR="${ORBIT_BUILD_DIR:-${PROJECT_DIR}/build-$(date +%Y%m%d%H%M%S)}"
 ARCHIVE_PATH="${BUILD_DIR}/${APP_NAME}.xcarchive"
 EXPORT_DIR="${BUILD_DIR}/export"
 DMG_BACKGROUND="${PROJECT_DIR}/dmg-background.png"
 GITHUB_REPO="${GITHUB_REPO:-}"
+ORBIT_SKIP_GITHUB_RELEASE="${ORBIT_SKIP_GITHUB_RELEASE:-0}"
 BUNDLE_RUNTIME_SCRIPT="${PROJECT_DIR}/scripts/bundle_codex_runtime.sh"
 GENERATE_BRAND_ASSETS_SCRIPT="${PROJECT_DIR}/scripts/generate_brand_assets.swift"
 DEVELOPMENT_TEAM_ID="${ORBIT_DEVELOPMENT_TEAM:-}"
@@ -126,8 +127,13 @@ xcodebuild -exportArchive \
     -exportPath "${EXPORT_DIR}" \
     -exportOptionsPlist "${EXPORT_OPTIONS}"
 
-echo "🔏 Re-signing bundled runtime executables..."
 EXPORT_APP_PATH="${EXPORT_DIR}/${APP_NAME}.app"
+if [[ -f "${EXPORT_APP_PATH}/Contents/Resources/LocalSecrets.plist" ]]; then
+    echo "🧼 Removing bundled LocalSecrets from release app..."
+    rm -f "${EXPORT_APP_PATH}/Contents/Resources/LocalSecrets.plist"
+fi
+
+echo "🔏 Re-signing bundled runtime executables..."
 while IFS= read -r executable_path; do
     codesign --force --sign "${DEVELOPER_ID_IDENTITY}" --options runtime --timestamp "${executable_path}"
 done < <(find "${EXPORT_APP_PATH}/Contents/Resources/CodexRuntime" -type f -perm -111 | sort)
@@ -187,7 +193,9 @@ else
     echo "⚠️ Skipping notarization because AC_PASSWORD credentials are not configured in Keychain."
 fi
 
-if [[ -n "${GITHUB_REPO}" ]] && command -v gh >/dev/null 2>&1; then
+if [[ "${ORBIT_SKIP_GITHUB_RELEASE}" == "1" ]]; then
+    echo "⚠️ Skipping GitHub release creation because ORBIT_SKIP_GITHUB_RELEASE=1."
+elif [[ -n "${GITHUB_REPO}" ]] && command -v gh >/dev/null 2>&1; then
     echo "🏷️ Creating GitHub release ${TAG}..."
     RELEASE_ASSETS=("${DMG_PATH}")
     if [[ -f "${PKG_PATH}" ]]; then

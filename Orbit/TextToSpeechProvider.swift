@@ -532,12 +532,7 @@ enum OrbitTTSProviderFactory {
         case .localVoice:
             return AppleSystemTTSProvider()
         case .cloudVoice:
-            let openAIProvider = OpenAITTSProvider(voicePreset: voicePreset)
-            if openAIProvider.isConfigured {
-                return openAIProvider
-            }
-            print("⚠️ TTS: OpenAI voice preferred but not configured, falling back to Apple Speech")
-            return AppleSystemTTSProvider()
+            return OpenAITTSProvider(voicePreset: voicePreset)
         }
     }
 

@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 @MainActor
-final class OpenAITTSProvider: TextToSpeechProvider {
+final class OpenAITTSProvider: NSObject, TextToSpeechProvider, AVAudioPlayerDelegate {
     private let resolvedAPIKey = OrbitOpenAIKeychainStore.resolvedAPIKey()
     private let modelName = AppBundleConfiguration.stringValue(forKey: "OpenAITTSModel")
         ?? "gpt-4o-mini-tts"
@@ -10,6 +10,7 @@ final class OpenAITTSProvider: TextToSpeechProvider {
     private let session: URLSession
     private let endpointURL = URL(string: "https://api.openai.com/v1/audio/speech")!
     private var audioPlayer: AVAudioPlayer?
+    private var currentSpeakContinuation: CheckedContinuation<Void, Error>?
 
     init(voicePreset: OrbitVoicePreset) {
         self.voicePreset = voicePreset
@@ -17,6 +18,7 @@ final class OpenAITTSProvider: TextToSpeechProvider {
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 90
         self.session = URLSession(configuration: configuration)
+        super.init()
     }
 
     var displayName: String {
@@ -37,6 +39,8 @@ final class OpenAITTSProvider: TextToSpeechProvider {
     }
 
     func speakText(_ text: String) async throws {
+        stopPlayback()
+
         guard let resolvedAPIKey else {
             throw NSError(
                 domain: "OpenAITTSProvider",
@@ -78,14 +82,60 @@ final class OpenAITTSProvider: TextToSpeechProvider {
             )
         }
 
-        let player = try AVAudioPlayer(data: data)
-        audioPlayer = player
-        player.play()
+        try await withCheckedThrowingContinuation { continuation in
+            do {
+                let player = try AVAudioPlayer(data: data)
+                player.delegate = self
+                audioPlayer = player
+                currentSpeakContinuation = continuation
+                if !player.play() {
+                    audioPlayer = nil
+                    currentSpeakContinuation = nil
+                    continuation.resume(
+                        throwing: NSError(
+                            domain: "OpenAITTSProvider",
+                            code: -3,
+                            userInfo: [NSLocalizedDescriptionKey: "OpenAI voice could not start playback."]
+                        )
+                    )
+                }
+            } catch {
+                audioPlayer = nil
+                currentSpeakContinuation = nil
+                continuation.resume(throwing: error)
+            }
+        }
     }
 
     func stopPlayback() {
-        audioPlayer?.stop()
+        if audioPlayer?.isPlaying == true {
+            audioPlayer?.stop()
+        }
         audioPlayer = nil
+        if let currentSpeakContinuation {
+            self.currentSpeakContinuation = nil
+            currentSpeakContinuation.resume()
+        }
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let continuation = self.currentSpeakContinuation
+            self.currentSpeakContinuation = nil
+            self.audioPlayer = nil
+            if flag {
+                continuation?.resume()
+            } else {
+                continuation?.resume(
+                    throwing: NSError(
+                        domain: "OpenAITTSProvider",
+                        code: -4,
+                        userInfo: [NSLocalizedDescriptionKey: "OpenAI voice playback was interrupted."]
+                    )
+                )
+            }
+        }
     }
 
     private var preferredVoiceName: String {

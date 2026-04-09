@@ -11,6 +11,8 @@
 - `OpenAITTSProvider.swift` is the default cloud TTS provider using `gpt-4o-mini-tts`.
 - `TextToSpeechProvider.swift` also includes `AppleSystemTTSProvider` as the local speech fallback.
 - `OrbitOpenAIVoiceConfiguration.swift` stores the Cloud voice API key in Keychain and validates it.
+- `OrbitCodexEnvironment.swift` prepares Orbit's isolated Codex home, bundled browser MCP config, and bundled skill inventory.
+- `OrbitBundledSkills.swift` selects the Orbit-owned and curated skills to inject into turns when the request clearly matches them.
 
 ### Actions and state
 - `ActionProvider.swift` defines Orbit's unified Codex request contract.
@@ -33,3 +35,5 @@
 - TTS default: OpenAI `gpt-4o-mini-tts`
 - Local fallbacks: Apple Speech and Apple system speech
 - Unified assistant path: Codex app-server
+- Bundled browser tools: `chrome-devtools-mcp`, `@playwright/mcp`
+- Bundled skills: `orbit-assistant`, `doc`, `pdf`, `slides`, `spreadsheet`, `screenshot`, `transcribe`, `speech`, `openai-docs`

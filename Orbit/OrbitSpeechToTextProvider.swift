@@ -38,12 +38,7 @@ enum OrbitSpeechToTextProviderFactory {
         case .localVoice:
             return appleProvider
         case .cloudVoice:
-            if openAIProvider.isConfigured {
-                return openAIProvider
-            }
-
-            print("⚠️ Transcription: OpenAI preferred but not configured, falling back to Apple Speech")
-            return appleProvider
+            return openAIProvider
         }
     }
 
