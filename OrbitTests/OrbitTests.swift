@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Orbit
 
@@ -29,5 +30,19 @@ struct OrbitTests {
         )
 
         #expect(shouldTreatPermissionAsGranted)
+    }
+
+    @Test func modelInstructionsStayTopLevelInGeneratedCodexConfig() async throws {
+        let config = OrbitCodexEnvironment.makeConfigContents(
+            logDirectory: URL(fileURLWithPath: "/tmp/orbit-log"),
+            sqliteDirectory: URL(fileURLWithPath: "/tmp/orbit-sqlite"),
+            configuredSkillPaths: [:],
+            modelInstructionsPath: "/tmp/OrbitModelInstructions.md"
+        )
+
+        let instructionsRange = try #require(config.range(of: "model_instructions_file"))
+        let featuresRange = try #require(config.range(of: "\n[features]\n"))
+
+        #expect(instructionsRange.lowerBound < featuresRange.lowerBound)
     }
 }

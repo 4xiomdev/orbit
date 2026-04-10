@@ -108,10 +108,11 @@ enum OrbitCodexEnvironment {
         return baseURL.appendingPathComponent("Orbit", isDirectory: true)
     }
 
-    private static func makeConfigContents(
+    static func makeConfigContents(
         logDirectory: URL,
         sqliteDirectory: URL,
-        configuredSkillPaths: [String: URL]
+        configuredSkillPaths: [String: URL],
+        modelInstructionsPath: String? = nil
     ) -> String {
         var lines: [String] = [
             "model = \"gpt-5.4-mini\"",
@@ -123,7 +124,22 @@ enum OrbitCodexEnvironment {
             "mcp_oauth_credentials_store = \"file\"",
             "log_dir = \(tomlString(logDirectory.path))",
             "sqlite_home = \(tomlString(sqliteDirectory.path))",
-            "history.persistence = \"save-all\"",
+            "history.persistence = \"save-all\""
+        ]
+
+        // `model_instructions_file` is a top-level key. If it appears after
+        // `[features]`, TOML nests it under that table and Codex rejects the
+        // config because `features.*` entries must be booleans.
+        if let instructionsPath = modelInstructionsPath ?? bundledModelInstructionsPath()?.path {
+            lines += [
+                "",
+                "model_instructions_file = \(tomlString(instructionsPath))",
+            ]
+        } else {
+            OrbitSupportLog.append("codex", "bundled Orbit model instructions were not found in the app bundle.")
+        }
+
+        lines += [
             "",
             "[features]",
             "apps = true",
@@ -131,15 +147,6 @@ enum OrbitCodexEnvironment {
             "multi_agent = false",
             ""
         ]
-
-        if let instructionsPath = bundledModelInstructionsPath()?.path {
-            lines += [
-                "model_instructions_file = \(tomlString(instructionsPath))",
-                ""
-            ]
-        } else {
-            OrbitSupportLog.append("codex", "bundled Orbit model instructions were not found in the app bundle.")
-        }
 
         if let chromeDevToolsCommand = bundledBrowserCommand(named: "chrome-devtools-mcp") {
             lines += [
