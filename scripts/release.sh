@@ -77,6 +77,7 @@ DMG_PATH="${BUILD_DIR}/${APP_NAME}-${MARKETING_VERSION}.dmg"
 PKG_PATH="${BUILD_DIR}/${APP_NAME}-${MARKETING_VERSION}.pkg"
 PKG_ROOT="${BUILD_DIR}/pkg-root"
 PKG_SCRIPTS_DIR="${PROJECT_DIR}/scripts/installer"
+PKG_COMPONENT_PLIST="${BUILD_DIR}/components.plist"
 EXPORT_OPTIONS="${BUILD_DIR}/ExportOptions.plist"
 
 echo "🚀 Releasing ${APP_NAME} ${TAG} (build ${BUILD_NUMBER})"
@@ -150,8 +151,32 @@ rm -rf "${PKG_ROOT}"
 mkdir -p "${PKG_ROOT}/Applications"
 cp -R "${EXPORT_APP_PATH}" "${PKG_ROOT}/Applications/"
 
+# Prevent Installer from "relocating" Orbit onto previously moved dev/export
+# app bundles that happen to share the same bundle identifier.
+cat > "${PKG_COMPONENT_PLIST}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+    <dict>
+        <key>RootRelativeBundlePath</key>
+        <string>Applications/${APP_NAME}.app</string>
+        <key>BundleIsRelocatable</key>
+        <false/>
+        <key>BundleIsVersionChecked</key>
+        <true/>
+        <key>BundleHasStrictIdentifier</key>
+        <true/>
+        <key>BundleOverwriteAction</key>
+        <string>upgrade</string>
+    </dict>
+</array>
+</plist>
+PLIST
+
 PKGBUILD_ARGS=(
     --root "${PKG_ROOT}"
+    --component-plist "${PKG_COMPONENT_PLIST}"
     --scripts "${PKG_SCRIPTS_DIR}"
     --identifier "com.orbit.codex.installer"
     --version "${MARKETING_VERSION}"
