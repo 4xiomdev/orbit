@@ -42,6 +42,7 @@ enum OrbitSpeechToTextProviderFactory {
         }
     }
 
+    @MainActor
     static func makeDefaultProvider() -> any SpeechToTextProvider {
         let provider = makeProvider(for: OrbitSettings.shared.voicePreset)
         print("🎙️ Transcription: using \(provider.displayName)")
