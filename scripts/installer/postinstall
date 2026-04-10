@@ -37,7 +37,7 @@ APP_PATH="/Applications/Orbit.app"
 PLIST_PATH="${HOME}/Library/LaunchAgents/com.orbit.codex.postinstall-open.plist"
 
 sleep 2
-/usr/bin/open -a "${APP_PATH}" >/dev/null 2>&1 || true
+/usr/bin/open "${APP_PATH}" >/dev/null 2>&1 || true
 sleep 2
 /bin/launchctl bootout "gui/$(id -u)" "${PLIST_PATH}" >/dev/null 2>&1 || true
 rm -f "${PLIST_PATH}" "$0"
