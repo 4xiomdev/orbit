@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>OpenAITranscriptionModel</key>
+	<string>gpt-4o-mini-transcribe</string>
+	<key>OpenAITTSModel</key>
+	<string>gpt-4o-mini-tts</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Orbit uses your microphone so you can talk to it.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Orbit needs screen recording access to see your screen and help you.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Orbit uses speech recognition to transcribe your voice when you talk to it.</string>
+	<key>OpenAIAPIKey</key>
+	<string></string>
+	<key>CodexActionModel</key>
+	<string>gpt-5.4</string>
+	<key>CodexActionServiceTier</key>
+	<string>fast</string>
+	<key>CodexActionSandbox</key>
+	<string>danger-full-access</string>
+</dict>
+</plist>

@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build Orbit
+        run: xcodebuild -project Orbit.xcodeproj -scheme Orbit -destination 'platform=macOS' build CODE_SIGNING_ALLOWED=NO
+
+      - name: Run Orbit unit tests
+        run: xcodebuild -project Orbit.xcodeproj -scheme Orbit -destination 'platform=macOS' -only-testing:OrbitTests test CODE_SIGNING_ALLOWED=NO
