@@ -70,7 +70,10 @@ if ! command -v create-dmg >/dev/null 2>&1; then
     exit 1
 fi
 
-MARKETING_VERSION="${1:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${PROJECT_DIR}/Orbit-Info.plist" 2>/dev/null || echo "1.0")}"
+DEFAULT_MARKETING_VERSION="$(
+    sed -nE 's/^[[:space:]]*MARKETING_VERSION = ([^;]+);$/\1/p' "${PROJECT_DIR}/Orbit.xcodeproj/project.pbxproj" | head -n 1
+)"
+MARKETING_VERSION="${1:-${DEFAULT_MARKETING_VERSION:-1.0.1}}"
 BUILD_NUMBER="${2:-$(date +%Y%m%d%H%M)}"
 TAG="v${MARKETING_VERSION}"
 DMG_PATH="${BUILD_DIR}/${APP_NAME}-${MARKETING_VERSION}.dmg"
