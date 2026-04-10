@@ -125,4 +125,29 @@ struct OrbitTests {
         #expect(parsed.first?.supportedEfforts == [.medium, .high])
         #expect(parsed.first?.defaultEffort == .medium)
     }
+
+    @Test func commentaryBufferMergeAvoidsOverlappingStreamDuplication() async throws {
+        let merged = CodexAppServerActionProvider.mergedCommentaryBuffer(
+            existing: "Using the pdf skill to make a polished",
+            incomingDelta: " polished illustrated PDF"
+        )
+
+        #expect(merged == "Using the pdf skill to make a polished illustrated PDF")
+    }
+
+    @Test func earlyCommentarySpeechWaitsForStableChunk() async throws {
+        let tooEarly = CodexAppServerActionProvider.speakableCommentarySnippet(
+            from: "Using the pdf skill"
+        )
+        let stableSnippet = CodexAppServerActionProvider.speakableCommentarySnippet(
+            from: "Using the pdf skill to make a polished illustrated PDF and save it for you"
+        )
+        let completedSentence = CodexAppServerActionProvider.speakableCommentarySnippet(
+            from: "Opening the browser now. Then I'll sign you in."
+        )
+
+        #expect(tooEarly == nil)
+        #expect(stableSnippet == "Using the pdf skill to make a polished illustrated PDF and save it for you.")
+        #expect(completedSentence == "Opening the browser now.")
+    }
 }

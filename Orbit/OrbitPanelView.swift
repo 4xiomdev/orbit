@@ -550,9 +550,9 @@ struct OrbitPanelView: View {
                     }
                 }
                 .padding(.top, 2)
-            } else if !orbitManager.recentActionUpdates.isEmpty {
+            } else if !visibleRecentActionUpdates.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
-                    ForEach(Array(orbitManager.recentActionUpdates.suffix(4).enumerated()), id: \.offset) { _, update in
+                    ForEach(Array(visibleRecentActionUpdates.enumerated()), id: \.offset) { _, update in
                         HStack(alignment: .top, spacing: 6) {
                             Circle()
                                 .fill(Color.white.opacity(0.55))
@@ -1328,6 +1328,18 @@ struct OrbitPanelView: View {
         case .failed:
             return DS.Colors.destructive
         }
+    }
+
+    private var visibleRecentActionUpdates: [String] {
+        let activeDetail = orbitManager.activeActionDetailLine?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let filtered = orbitManager.recentActionUpdates.filter { update in
+            guard let activeDetail, !activeDetail.isEmpty else { return true }
+            return update.trimmingCharacters(in: .whitespacesAndNewlines) != activeDetail
+        }
+
+        return Array(filtered.suffix(4))
     }
 
     private var codexDetailLine: String? {

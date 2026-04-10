@@ -733,7 +733,6 @@ final class OrbitManager: ObservableObject {
             handleEarlyActionCommentary(commentary)
         case .liveUpdate(let update):
             activeActionDetailLine = update
-            appendActionUpdate(update)
             showCodexActivityOverlayCard()
         case .toolPrompt(let prompt):
             pendingToolPrompt = prompt
@@ -765,8 +764,6 @@ final class OrbitManager: ObservableObject {
             scheduleTransientHideIfNeeded()
         case .completed(let summary):
             cancelActionAcknowledgementFlow()
-            textToSpeechProvider.stopPlayback()
-            fallbackTextToSpeechProvider.stopPlayback()
             pendingToolPrompt = nil
             handleCompletedCodexSummary(summary)
         case .failed(let errorMessage):
@@ -1154,6 +1151,7 @@ final class OrbitManager: ObservableObject {
         let trimmedFallback = fallback?.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalText = (trimmedPrimary?.isEmpty == false ? trimmedPrimary : trimmedFallback) ?? "done."
 
+        await waitForCurrentSpeechToSettle(maximumWait: 2.4)
         voiceState = .responding
 
         do {
@@ -1165,6 +1163,21 @@ final class OrbitManager: ObservableObject {
 
         voiceState = .idle
         scheduleTransientHideIfNeeded()
+    }
+
+    private func waitForCurrentSpeechToSettle(maximumWait: TimeInterval) async {
+        let deadline = Date().addingTimeInterval(maximumWait)
+        while (textToSpeechProvider.isPlaying || fallbackTextToSpeechProvider.isPlaying),
+              Date() < deadline {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+        }
+
+        if textToSpeechProvider.isPlaying {
+            textToSpeechProvider.stopPlayback()
+        }
+        if fallbackTextToSpeechProvider.isPlaying {
+            fallbackTextToSpeechProvider.stopPlayback()
+        }
     }
 
     private func scheduleActionAcknowledgementFallback() {

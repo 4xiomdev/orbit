@@ -1507,16 +1507,19 @@ final class CodexAppServerActionProvider: ActionProvider {
             return
         }
 
-        streamedCommentaryBuffer.append(deltaText)
+        streamedCommentaryBuffer = Self.mergedCommentaryBuffer(
+            existing: streamedCommentaryBuffer,
+            incomingDelta: deltaText
+        )
 
-        if let update = visibleCommentaryUpdate(from: streamedCommentaryBuffer),
+        if let update = Self.visibleCommentaryUpdate(from: streamedCommentaryBuffer),
            update != lastEmittedLiveCommentary {
             lastEmittedLiveCommentary = update
             eventHandler?(.liveUpdate(update))
         }
 
         guard !hasEmittedEarlyCommentary,
-              let snippet = speakableCommentarySnippet(from: streamedCommentaryBuffer) else {
+              let snippet = Self.speakableCommentarySnippet(from: streamedCommentaryBuffer) else {
             return
         }
 
@@ -1525,14 +1528,14 @@ final class CodexAppServerActionProvider: ActionProvider {
     }
 
     private func emitCompletedCommentaryIfNeeded(text: String) {
-        if let update = visibleCommentaryUpdate(from: text),
+        if let update = Self.visibleCommentaryUpdate(from: text),
            update != lastEmittedLiveCommentary {
             lastEmittedLiveCommentary = update
             eventHandler?(.liveUpdate(update))
         }
 
         guard !hasEmittedEarlyCommentary,
-              let snippet = speakableCommentarySnippet(from: text) else {
+              let snippet = Self.speakableCommentarySnippet(from: text) else {
             return
         }
 
@@ -1837,30 +1840,64 @@ final class CodexAppServerActionProvider: ActionProvider {
         return nil
     }
 
-    private func speakableCommentarySnippet(from text: String) -> String? {
+    static func mergedCommentaryBuffer(existing: String, incomingDelta: String) -> String {
+        guard !incomingDelta.isEmpty else { return existing }
+        guard !existing.isEmpty else { return incomingDelta }
+
+        if existing.hasSuffix(incomingDelta) {
+            return existing
+        }
+
+        if incomingDelta.hasPrefix(existing) {
+            return incomingDelta
+        }
+
+        let maximumOverlap = min(existing.count, incomingDelta.count)
+        if maximumOverlap > 0 {
+            for overlapCount in stride(from: maximumOverlap, through: 1, by: -1) {
+                let existingSuffix = String(existing.suffix(overlapCount))
+                let incomingPrefix = String(incomingDelta.prefix(overlapCount))
+                if existingSuffix == incomingPrefix {
+                    return existing + incomingDelta.dropFirst(overlapCount)
+                }
+            }
+        }
+
+        return existing + incomingDelta
+    }
+
+    static func speakableCommentarySnippet(from text: String) -> String? {
         let cleaned = text
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard cleaned.count >= 18 else { return nil }
+        guard cleaned.count >= 28 else { return nil }
 
-        let firstSentence = cleaned.split(whereSeparator: { ".!?".contains($0) }).first.map(String.init) ?? cleaned
-        let candidate = firstSentence.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard candidate.split(separator: " ").count >= 3 else { return nil }
-
-        if candidate.count <= 72 {
-            return candidate.hasSuffix(".") ? candidate : "\(candidate)."
+        if let firstCompletedSentence = firstCompletedSentence(in: cleaned) {
+            let candidate = firstCompletedSentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard candidate.split(separator: " ").count >= 4 else { return nil }
+            return candidate
         }
 
-        let prefix = String(candidate.prefix(69))
-        let trimmed = prefix
-            .replacingOccurrences(of: "\\s+\\S*$", with: "", options: .regularExpression)
+        guard cleaned.count >= 42, cleaned.split(separator: " ").count >= 7 else { return nil }
+
+        let maximumLength = 120
+        let wasTruncated = cleaned.count > maximumLength
+        let prefix = String(cleaned.prefix(maximumLength))
+        let trimmed = (wasTruncated
+            ? prefix.replacingOccurrences(of: "\\s+\\S*$", with: "", options: .regularExpression)
+            : prefix)
+            .replacingOccurrences(
+                of: "\\b(?:and|or|to|for|with|of|in|on|at|by|from|about|into|over|after|before|without|using)$",
+                with: "",
+                options: .regularExpression
+            )
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return "\(trimmed)..."
+        guard trimmed.split(separator: " ").count >= 4 else { return nil }
+        return trimmed.hasSuffix(".") ? trimmed : "\(trimmed)."
     }
 
-    private func visibleCommentaryUpdate(from text: String) -> String? {
+    static func visibleCommentaryUpdate(from text: String) -> String? {
         let cleaned = text
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1882,6 +1919,16 @@ final class CodexAppServerActionProvider: ActionProvider {
             .replacingOccurrences(of: "\\s+\\S*$", with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : "\(trimmed)..."
+    }
+
+    private static func firstCompletedSentence(in text: String) -> String? {
+        guard let terminatorIndex = text.firstIndex(where: { ".!?".contains($0) }) else {
+            return nil
+        }
+
+        let sentence = String(text[...terminatorIndex])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return sentence.isEmpty ? nil : sentence
     }
 
     private func updateModelCatalog(from result: [String: Any]) {
