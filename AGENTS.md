@@ -11,11 +11,11 @@ Orbit is a Codex-native macOS menu bar assistant.
 
 ## Important files
 
-- [Orbit/OrbitManager.swift](/Users/4xiom/orbit/Orbit/OrbitManager.swift) — unified Codex routing, screenshots, overlay updates, action summaries
-- [Orbit/OrbitDictationManager.swift](/Users/4xiom/orbit/Orbit/OrbitDictationManager.swift) — push-to-talk capture and STT session management
-- [Orbit/OrbitSettings.swift](/Users/4xiom/orbit/Orbit/OrbitSettings.swift) — persisted voice mode, Codex effort, and overlay settings
-- [Orbit/CodexAppServerActionProvider.swift](/Users/4xiom/orbit/Orbit/CodexAppServerActionProvider.swift) — persistent Codex session and event streaming
-- [Orbit/OverlayWindow.swift](/Users/4xiom/orbit/Orbit/OverlayWindow.swift) — Orbit cursor, HUD, and pointing animations
+- [Orbit/OrbitManager.swift](Orbit/OrbitManager.swift) — unified Codex routing, screenshots, overlay updates, action summaries
+- [Orbit/OrbitDictationManager.swift](Orbit/OrbitDictationManager.swift) — push-to-talk capture and STT session management
+- [Orbit/OrbitSettings.swift](Orbit/OrbitSettings.swift) — persisted voice mode, Codex effort, and overlay settings
+- [Orbit/CodexAppServerActionProvider.swift](Orbit/CodexAppServerActionProvider.swift) — persistent Codex session and event streaming
+- [Orbit/OverlayWindow.swift](Orbit/OverlayWindow.swift) — Orbit cursor, HUD, and pointing animations
 
 ## Notes
 
