@@ -81,15 +81,6 @@ struct OrbitCodexModelOption: Identifiable, Equatable {
 
     static let fallbackPickerModels: [OrbitCodexModelOption] = [
         OrbitCodexModelOption(
-            model: "gpt-5.4-mini",
-            displayName: "GPT-5.4 Mini",
-            shortDisplayName: "5.4 Mini",
-            supportedEfforts: OrbitCodexReasoningEffort.allCases,
-            defaultEffort: .medium,
-            inputModalities: ["text", "image"],
-            isDefault: false
-        ),
-        OrbitCodexModelOption(
             model: "gpt-5.4",
             displayName: "GPT-5.4",
             shortDisplayName: "5.4",
@@ -97,10 +88,19 @@ struct OrbitCodexModelOption: Identifiable, Equatable {
             defaultEffort: .medium,
             inputModalities: ["text", "image"],
             isDefault: true
+        ),
+        OrbitCodexModelOption(
+            model: "gpt-5.4-mini",
+            displayName: "GPT-5.4 Mini",
+            shortDisplayName: "5.4 Mini",
+            supportedEfforts: OrbitCodexReasoningEffort.allCases,
+            defaultEffort: .medium,
+            inputModalities: ["text", "image"],
+            isDefault: false
         )
     ]
 
-    static let fallbackDefaultModel = "gpt-5.4-mini"
+    static let fallbackDefaultModel = "gpt-5.4"
 
     static func fallbackOption(for model: String) -> OrbitCodexModelOption? {
         fallbackPickerModels.first(where: { $0.model == model })

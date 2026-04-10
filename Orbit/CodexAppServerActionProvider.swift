@@ -90,10 +90,7 @@ final class CodexAppServerActionProvider: ActionProvider {
     }
 
     var configurationSummary: String {
-        if settings.codexServiceTier == .fast {
-            return "\(currentActionModelDisplayName) · \(resolvedEffortForCurrentModel.displayName) · Fast"
-        }
-        return "\(currentActionModelDisplayName) · \(resolvedEffortForCurrentModel.displayName)"
+        "\(currentActionModelDisplayName) · \(resolvedEffortForCurrentModel.displayName) · \(resolvedServiceTier.displayName)"
     }
 
     var availableModels: [OrbitCodexModelOption] {
@@ -101,7 +98,14 @@ final class CodexAppServerActionProvider: ActionProvider {
     }
 
     var supportedEffortsForSelectedModel: [OrbitCodexReasoningEffort] {
-        modelOption(for: normalizedCurrentActionModel)?.supportedEfforts ?? OrbitCodexReasoningEffort.allCases
+        supportedEfforts(for: normalizedCurrentActionModel)
+    }
+
+    func supportedEfforts(for model: String) -> [OrbitCodexReasoningEffort] {
+        let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return modelOption(for: normalizedModel)?.supportedEfforts
+            ?? OrbitCodexModelOption.fallbackOption(for: normalizedModel)?.supportedEfforts
+            ?? OrbitCodexReasoningEffort.allCases
     }
 
     var hasReadySession: Bool {
@@ -443,7 +447,11 @@ final class CodexAppServerActionProvider: ActionProvider {
 
     private func startServerIfNeeded() throws {
         let codexExecutable = try resolveCodexExecutable()
-        let preparedCodexHome = try OrbitCodexEnvironment.prepareHome()
+        let preparedCodexHome = try OrbitCodexEnvironment.prepareHome(
+            model: normalizedCurrentActionModel,
+            reasoningEffort: resolvedEffortForCurrentModel,
+            serviceTier: resolvedServiceTier
+        )
         self.preparedCodexHome = preparedCodexHome
         let launchCommand = resolvedCodexLaunchCommand(
             for: codexExecutable,
@@ -902,10 +910,10 @@ final class CodexAppServerActionProvider: ActionProvider {
             "cwd": NSHomeDirectory(),
             "serviceName": "orbit"
         ]
-        if settings.codexServiceTier == .fast {
+        if resolvedServiceTier == .fast {
             params["serviceTier"] = OrbitCodexServiceTier.fast.rawValue
         }
-        appendDebugEvent("-> thread/start model=\(normalizedCurrentActionModel) effort=\(resolvedEffortForCurrentModel.rawValue) tier=\(settings.codexServiceTier.rawValue)")
+        appendDebugEvent("-> thread/start model=\(normalizedCurrentActionModel) effort=\(resolvedEffortForCurrentModel.rawValue) tier=\(resolvedServiceTier.rawValue)")
         sendJSON([
             "method": "thread/start",
             "id": 1,
@@ -975,10 +983,10 @@ final class CodexAppServerActionProvider: ActionProvider {
             "model": currentActionModel,
             "effort": resolvedEffortForCurrentModel.rawValue
         ]
-        if settings.codexServiceTier == .fast {
+        if resolvedServiceTier == .fast {
             params["serviceTier"] = OrbitCodexServiceTier.fast.rawValue
         }
-        appendDebugEvent("-> turn/start model=\(currentActionModel) effort=\(resolvedEffortForCurrentModel.rawValue) tier=\(settings.codexServiceTier.rawValue) inputItems=\(inputItems.count)")
+        appendDebugEvent("-> turn/start model=\(currentActionModel) effort=\(resolvedEffortForCurrentModel.rawValue) tier=\(resolvedServiceTier.rawValue) inputItems=\(inputItems.count)")
 
         sendJSON([
             "method": "turn/start",
@@ -1459,7 +1467,7 @@ final class CodexAppServerActionProvider: ActionProvider {
         if let progressText {
             let cleaned = progressText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !cleaned.isEmpty {
-                eventHandler?(.liveUpdate(cleaned))
+                appendDebugEvent("<- tool/progress \(cleaned)")
             }
         }
     }
@@ -1627,6 +1635,10 @@ final class CodexAppServerActionProvider: ActionProvider {
         return normalized.isEmpty ? OrbitCodexModelOption.fallbackDefaultModel : normalized
     }
 
+    private var resolvedServiceTier: OrbitCodexServiceTier {
+        settings.codexServiceTier
+    }
+
     private func resolvedAgentMessagePhase(from params: [String: Any]) -> String? {
         if let phase = params["phase"] as? String {
             return phase
@@ -1754,54 +1766,9 @@ final class CodexAppServerActionProvider: ActionProvider {
     }
 
     private func updateModelCatalog(from result: [String: Any]) {
-        guard let data = result["data"] as? [[String: Any]] else { return }
-
-        let parsedModels = data.compactMap { item -> OrbitCodexModelOption? in
-            let model = (item["model"] as? String) ?? (item["id"] as? String) ?? ""
-            let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalizedModel.isEmpty else { return nil }
-
-            let hidden = item["hidden"] as? Bool ?? false
-            guard !hidden else { return nil }
-
-            let inputModalities = (item["inputModalities"] as? [String]) ?? ["text", "image"]
-            let normalizedModalities = inputModalities.map { $0.lowercased() }
-            guard normalizedModalities.contains("text"), normalizedModalities.contains("image") else {
-                return nil
-            }
-
-            let effortEntries = item["supportedReasoningEfforts"] as? [[String: Any]] ?? []
-            let supportedEfforts: [OrbitCodexReasoningEffort] = effortEntries.compactMap { entry in
-                guard let rawValue = entry["reasoningEffort"] as? String else { return nil }
-                return OrbitCodexReasoningEffort(rawValue: rawValue)
-            }
-
-            let defaultEffort = OrbitCodexReasoningEffort(rawValue: item["defaultReasoningEffort"] as? String ?? "")
-            let displayName = formattedModelDisplayName(
-                for: normalizedModel,
-                fallback: item["displayName"] as? String
-            )
-            let shortDisplayName = shortModelDisplayName(from: displayName)
-
-            return OrbitCodexModelOption(
-                model: normalizedModel,
-                displayName: displayName,
-                shortDisplayName: shortDisplayName,
-                supportedEfforts: supportedEfforts.isEmpty ? OrbitCodexReasoningEffort.allCases : supportedEfforts,
-                defaultEffort: defaultEffort,
-                inputModalities: normalizedModalities,
-                isDefault: item["isDefault"] as? Bool ?? false
-            )
-        }
-
+        let parsedModels = Self.parseModelCatalog(from: result)
         guard !parsedModels.isEmpty else { return }
-
-        availableModelOptions = parsedModels.sorted { lhs, rhs in
-            if lhs.isDefault != rhs.isDefault {
-                return lhs.isDefault && !rhs.isDefault
-            }
-            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
-        }
+        availableModelOptions = parsedModels
     }
 
     private func updateCollaborationModes(from result: [String: Any]) {
@@ -1833,7 +1800,86 @@ final class CodexAppServerActionProvider: ActionProvider {
         availableModelOptions.first(where: { $0.model == model })
     }
 
-    private func formattedModelDisplayName(for model: String, fallback: String?) -> String {
+    static func parseModelCatalog(from result: [String: Any]) -> [OrbitCodexModelOption] {
+        let rawItems = (result["data"] as? [[String: Any]]) ?? (result["models"] as? [[String: Any]]) ?? []
+
+        let parsedModels = rawItems.compactMap { item -> (option: OrbitCodexModelOption, priority: Int)? in
+            let normalizedModel = (
+                (item["model"] as? String)
+                ?? (item["id"] as? String)
+                ?? (item["slug"] as? String)
+                ?? ""
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedModel.isEmpty else { return nil }
+
+            let visibility = ((item["visibility"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let hidden = (item["hidden"] as? Bool) ?? (visibility == "hide" || visibility == "hidden")
+            guard !hidden else { return nil }
+
+            if let supportedInAPI = item["supported_in_api"] as? Bool, !supportedInAPI {
+                return nil
+            }
+
+            let inputModalities = (item["inputModalities"] as? [String])
+                ?? (item["input_modalities"] as? [String])
+                ?? ["text", "image"]
+            let normalizedModalities = inputModalities.map { $0.lowercased() }
+            guard normalizedModalities.contains("text"), normalizedModalities.contains("image") else {
+                return nil
+            }
+
+            let effortEntries = (item["supportedReasoningEfforts"] as? [[String: Any]])
+                ?? (item["supported_reasoning_levels"] as? [[String: Any]])
+                ?? []
+            let supportedEfforts = effortEntries.compactMap { entry -> OrbitCodexReasoningEffort? in
+                let rawValue = (
+                    (entry["reasoningEffort"] as? String)
+                    ?? (entry["effort"] as? String)
+                    ?? ""
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                return OrbitCodexReasoningEffort(rawValue: rawValue)
+            }
+
+            let defaultEffort = OrbitCodexReasoningEffort(rawValue: (
+                (item["defaultReasoningEffort"] as? String)
+                ?? (item["default_reasoning_level"] as? String)
+                ?? ""
+            ).trimmingCharacters(in: .whitespacesAndNewlines))
+            let displayName = formattedModelDisplayName(
+                for: normalizedModel,
+                fallback: (item["displayName"] as? String) ?? (item["display_name"] as? String)
+            )
+            let shortDisplayName = shortModelDisplayName(from: displayName)
+            let isDefault = (item["isDefault"] as? Bool ?? false) || normalizedModel == OrbitCodexModelOption.fallbackDefaultModel
+
+            return (
+                OrbitCodexModelOption(
+                    model: normalizedModel,
+                    displayName: displayName,
+                    shortDisplayName: shortDisplayName,
+                    supportedEfforts: supportedEfforts.isEmpty ? OrbitCodexReasoningEffort.allCases : supportedEfforts,
+                    defaultEffort: defaultEffort,
+                    inputModalities: normalizedModalities,
+                    isDefault: isDefault
+                ),
+                item["priority"] as? Int ?? Int.max
+            )
+        }
+
+        return parsedModels.sorted { lhs, rhs in
+            if lhs.option.isDefault != rhs.option.isDefault {
+                return lhs.option.isDefault && !rhs.option.isDefault
+            }
+            if lhs.priority != rhs.priority {
+                return lhs.priority < rhs.priority
+            }
+            return lhs.option.displayName.localizedCaseInsensitiveCompare(rhs.option.displayName) == .orderedAscending
+        }.map { $0.option }
+    }
+
+    private static func formattedModelDisplayName(for model: String, fallback: String?) -> String {
         let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines)
         switch normalized {
         case "gpt-5.4":
@@ -1851,16 +1897,15 @@ final class CodexAppServerActionProvider: ActionProvider {
         let fallbackValue = fallback?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !fallbackValue.isEmpty {
             return fallbackValue
-                .replacingOccurrences(of: "GPT-", with: "GPT-")
-                .replacingOccurrences(of: "gpt-", with: "GPT-")
-                .replacingOccurrences(of: "-mini", with: " Mini")
-                .replacingOccurrences(of: "-codex", with: " Codex")
+                .replacingOccurrences(of: "^gpt-", with: "GPT-", options: [.regularExpression, .caseInsensitive])
+                .replacingOccurrences(of: "-mini", with: " Mini", options: [.regularExpression, .caseInsensitive])
+                .replacingOccurrences(of: "-codex", with: " Codex", options: [.regularExpression, .caseInsensitive])
         }
 
         return normalized.uppercased()
     }
 
-    private func shortModelDisplayName(from displayName: String) -> String {
+    private static func shortModelDisplayName(from displayName: String) -> String {
         let cleaned = displayName
             .replacingOccurrences(of: "GPT-", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)

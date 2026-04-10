@@ -73,7 +73,7 @@ fi
 DEFAULT_MARKETING_VERSION="$(
     sed -nE 's/^[[:space:]]*MARKETING_VERSION = ([^;]+);$/\1/p' "${PROJECT_DIR}/Orbit.xcodeproj/project.pbxproj" | head -n 1
 )"
-MARKETING_VERSION="${1:-${DEFAULT_MARKETING_VERSION:-1.0.3}}"
+MARKETING_VERSION="${1:-${DEFAULT_MARKETING_VERSION:-1.0.4}}"
 BUILD_NUMBER="${2:-$(date +%Y%m%d%H%M)}"
 TAG="v${MARKETING_VERSION}"
 DMG_PATH="${BUILD_DIR}/${APP_NAME}-${MARKETING_VERSION}.dmg"

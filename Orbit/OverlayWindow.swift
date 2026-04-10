@@ -74,14 +74,21 @@ enum OrbitNavigationMode {
 struct OrbitCursorOverlayView: View {
     let screenFrame: CGRect
     let isFirstAppearance: Bool
+    let showWelcomeOnFirstAppearance: Bool
     @ObservedObject var orbitManager: OrbitManager
 
     @State private var cursorPosition: CGPoint
     @State private var isCursorOnThisScreen: Bool
 
-    init(screenFrame: CGRect, isFirstAppearance: Bool, orbitManager: OrbitManager) {
+    init(
+        screenFrame: CGRect,
+        isFirstAppearance: Bool,
+        showWelcomeOnFirstAppearance: Bool,
+        orbitManager: OrbitManager
+    ) {
         self.screenFrame = screenFrame
         self.isFirstAppearance = isFirstAppearance
+        self.showWelcomeOnFirstAppearance = showWelcomeOnFirstAppearance
         self.orbitManager = orbitManager
 
         // Seed the cursor position from the current mouse location so the
@@ -310,16 +317,18 @@ struct OrbitCursorOverlayView: View {
 
             // Only show welcome message on first appearance (app start)
             // and only if the cursor starts on this screen
-            if isFirstAppearance && isCursorOnThisScreen {
+            if showWelcomeOnFirstAppearance && isFirstAppearance && isCursorOnThisScreen {
+                self.welcomeText = self.fullWelcomeMessage
                 withAnimation(.easeIn(duration: 2.0)) {
                     self.cursorOpacity = 1.0
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                     self.showWelcome = false
                     self.bubbleOpacity = 0.0
-                    self.orbitManager.beginOrbitTour()
                 }
             } else {
+                self.showWelcome = false
+                self.bubbleOpacity = 0.0
                 self.cursorOpacity = 1.0
             }
         }
@@ -974,7 +983,11 @@ class OrbitOverlayWindowManager {
     private var overlayWindows: [OverlayWindow] = []
     var hasShownOverlayBefore = false
 
-    func showOverlay(onScreens screens: [NSScreen], orbitManager: OrbitManager) {
+    func showOverlay(
+        onScreens screens: [NSScreen],
+        orbitManager: OrbitManager,
+        showWelcomeOnFirstAppearance: Bool = true
+    ) {
         // Hide any existing overlays
         hideOverlay()
 
@@ -989,6 +1002,7 @@ class OrbitOverlayWindowManager {
             let contentView = OrbitCursorOverlayView(
                 screenFrame: screen.frame,
                 isFirstAppearance: isFirstAppearance,
+                showWelcomeOnFirstAppearance: showWelcomeOnFirstAppearance,
                 orbitManager: orbitManager
             )
 

@@ -29,7 +29,7 @@
 ## Defaults
 
 - STT default: OpenAI `gpt-4o-mini-transcribe`
-- Codex model default: `gpt-5.4-mini`
+- Codex model default: `gpt-5.4`
 - Codex effort default: `medium`
 - Codex service tier default: `fast`
 - TTS default: OpenAI `gpt-4o-mini-tts`
