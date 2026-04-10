@@ -132,6 +132,7 @@ xcodebuild -exportArchive \
     -exportOptionsPlist "${EXPORT_OPTIONS}"
 
 EXPORT_APP_PATH="${EXPORT_DIR}/${APP_NAME}.app"
+NODE_ENTITLEMENTS_PATH="${PROJECT_DIR}/Orbit/CodexRuntimeNode.entitlements"
 if [[ -f "${EXPORT_APP_PATH}/Contents/Resources/LocalSecrets.plist" ]]; then
     echo "🧼 Removing bundled LocalSecrets from release app..."
     rm -f "${EXPORT_APP_PATH}/Contents/Resources/LocalSecrets.plist"
@@ -139,7 +140,16 @@ fi
 
 echo "🔏 Re-signing bundled runtime executables..."
 while IFS= read -r executable_path; do
-    codesign --force --sign "${DEVELOPER_ID_IDENTITY}" --options runtime --timestamp "${executable_path}"
+    if [[ "$(basename "${executable_path}")" == "node" ]]; then
+        codesign --force \
+            --sign "${DEVELOPER_ID_IDENTITY}" \
+            --options runtime \
+            --timestamp \
+            --entitlements "${NODE_ENTITLEMENTS_PATH}" \
+            "${executable_path}"
+    else
+        codesign --force --sign "${DEVELOPER_ID_IDENTITY}" --options runtime --timestamp "${executable_path}"
+    fi
 done < <(find "${EXPORT_APP_PATH}/Contents/Resources/CodexRuntime" -type f -perm -111 | sort)
 
 codesign --force \

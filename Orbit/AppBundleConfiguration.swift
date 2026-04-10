@@ -8,6 +8,15 @@
 import Foundation
 
 enum AppBundleConfiguration {
+    static var showsCodexDebugInfo: Bool {
+#if DEBUG
+        let defaultValue = true
+#else
+        let defaultValue = false
+#endif
+        return boolValue(forKey: "OrbitShowCodexDebug", defaultValue: defaultValue)
+    }
+
     static func stringValue(forKey key: String) -> String? {
         if let environmentValue = ProcessInfo.processInfo.environment[environmentVariableName(for: key)] {
             let trimmedValue = environmentValue.trimmingCharacters(in: .whitespacesAndNewlines)

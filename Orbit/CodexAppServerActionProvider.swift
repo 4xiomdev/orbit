@@ -1,9 +1,29 @@
 import AppKit
 import Foundation
 
+private enum OrbitMcpStartupState: Equatable {
+    case unknown
+    case starting
+    case ready
+    case failed(String?)
+
+    var isResolved: Bool {
+        switch self {
+        case .ready, .failed:
+            return true
+        case .unknown, .starting:
+            return false
+        }
+    }
+}
+
 @MainActor
 final class CodexAppServerActionProvider: ActionProvider {
     let displayName = "Codex"
+    private static let browserToolServerNames = ["playwright", "chrome-devtools"]
+    private static func makeInitialMcpStartupStates() -> [String: OrbitMcpStartupState] {
+        Dictionary(uniqueKeysWithValues: browserToolServerNames.map { ($0, .unknown) })
+    }
     private(set) var status: OrbitActionStatus = .idle
     private let settings = OrbitSettings.shared
     private(set) var authState: OrbitCodexAuthState = .unknown
@@ -46,8 +66,10 @@ final class CodexAppServerActionProvider: ActionProvider {
     private var lastLoginURL: URL?
     private var lastLoginID: String?
     private var loginRequestTimeoutTask: Task<Void, Never>?
+    private var pendingTurnStartRetryTask: Task<Void, Never>?
     private var lastEmittedLiveCommentary: String?
     private var preparedCodexHome: OrbitPreparedCodexHome?
+    private var mcpStartupStates: [String: OrbitMcpStartupState] = CodexAppServerActionProvider.makeInitialMcpStartupStates()
     var stateDidChange: (() -> Void)?
 
     var isConfigured: Bool {
@@ -233,7 +255,7 @@ final class CodexAppServerActionProvider: ActionProvider {
         streamedCommentaryBuffer = ""
         hasEmittedEarlyCommentary = false
         lastEmittedLiveCommentary = nil
-        sendTurnStart()
+        attemptPendingTurnStart()
     }
 
     func respondToToolPrompt(requestID: Int, questionID: String, answer: String) {
@@ -453,6 +475,7 @@ final class CodexAppServerActionProvider: ActionProvider {
             serviceTier: resolvedServiceTier
         )
         self.preparedCodexHome = preparedCodexHome
+        mcpStartupStates = Self.makeInitialMcpStartupStates()
         let launchCommand = resolvedCodexLaunchCommand(
             for: codexExecutable,
             preparedCodexHome: preparedCodexHome
@@ -801,7 +824,7 @@ final class CodexAppServerActionProvider: ActionProvider {
             appendDebugEvent("<- thread/start ok \(String(threadID.suffix(6)))")
             notifyStateChanged()
             if pendingPrompt != nil {
-                sendTurnStart()
+                attemptPendingTurnStart()
             } else {
                 status = .idle
             }
@@ -934,10 +957,71 @@ final class CodexAppServerActionProvider: ActionProvider {
         stateDidChange?()
     }
 
+    private func attemptPendingTurnStart(forceAfterTimeout: Bool = false) {
+        guard activeThreadID != nil, pendingPrompt != nil, !isAwaitingTurnCompletion else { return }
+
+        if browserToolStartupStillPending && !forceAfterTimeout {
+            emitPhase(
+                .startingCodex,
+                detail: "connecting browser tools.",
+                rawSource: "waiting for browser tools"
+            )
+            schedulePendingTurnStartRetryIfNeeded()
+            return
+        }
+
+        pendingTurnStartRetryTask?.cancel()
+        pendingTurnStartRetryTask = nil
+        sendTurnStart()
+    }
+
+    private var browserToolStartupStillPending: Bool {
+        Self.browserToolServerNames.contains { serverName in
+            guard let state = mcpStartupStates[serverName] else { return false }
+            return !state.isResolved
+        }
+    }
+
+    private func schedulePendingTurnStartRetryIfNeeded() {
+        guard pendingTurnStartRetryTask == nil else { return }
+        pendingTurnStartRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard let self else { return }
+            self.pendingTurnStartRetryTask = nil
+            self.attemptPendingTurnStart(forceAfterTimeout: true)
+        }
+    }
+
+    private var runtimeCapabilityNote: String? {
+        let browserFailures = Self.browserToolServerNames.compactMap { serverName -> String? in
+            guard case .failed(let errorMessage) = mcpStartupStates[serverName] else { return nil }
+            let detail = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let detail, !detail.isEmpty {
+                return "- \(serverName) browser tools are unavailable in this Orbit session: \(detail)"
+            }
+            return "- \(serverName) browser tools are unavailable in this Orbit session"
+        }
+
+        guard !browserFailures.isEmpty else { return nil }
+
+        return """
+        Runtime capability note:
+        \(browserFailures.joined(separator: "\n"))
+        - do not claim browser control is available unless the tools actually work in this session
+        """
+    }
+
     private func sendTurnStart() {
         guard let threadID = activeThreadID, let pendingPrompt else { return }
 
         var inputItems: [[String: Any]] = []
+
+        if let runtimeCapabilityNote {
+            inputItems.append([
+                "type": "text",
+                "text": runtimeCapabilityNote
+            ])
+        }
 
         if let latestRequest,
            let screenshotPath = latestRequest.screenshotPath,
@@ -1003,6 +1087,13 @@ final class CodexAppServerActionProvider: ActionProvider {
         }
 
         var inputItems: [[String: Any]] = []
+
+        if let runtimeCapabilityNote {
+            inputItems.append([
+                "type": "text",
+                "text": runtimeCapabilityNote
+            ])
+        }
 
         if let latestRequest,
            let screenshotPath = latestRequest.screenshotPath,
@@ -1255,10 +1346,38 @@ final class CodexAppServerActionProvider: ActionProvider {
             return
         }
 
+        if Self.browserToolServerNames.contains(serverName) {
+            let errorMessage = (params["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch status {
+            case "starting":
+                mcpStartupStates[serverName] = .starting
+            case "ready":
+                mcpStartupStates[serverName] = .ready
+            case "failed":
+                mcpStartupStates[serverName] = .failed(errorMessage)
+            default:
+                break
+            }
+        }
+
         if status == "starting" {
             emitPhase(.startingCodex, detail: "starting \(serverName) tools.", rawSource: "starting \(serverName) tools")
         } else if status == "ready" && (serverName == "playwright" || serverName == "chrome-devtools") {
             emitPhase(.thinking, rawSource: "\(serverName) tools are ready")
+        } else if status == "failed" && (serverName == "playwright" || serverName == "chrome-devtools") {
+            let detail = {
+                let trimmed = (params["error"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let trimmed, !trimmed.isEmpty {
+                    return trimmed
+                }
+                return "browser tools failed to start."
+            }()
+            appendDebugEvent("\(serverName) tools failed: \(detail)")
+        }
+
+        if pendingPrompt != nil, activeThreadID != nil, !isAwaitingTurnCompletion {
+            attemptPendingTurnStart()
         }
     }
 
@@ -1992,6 +2111,8 @@ final class CodexAppServerActionProvider: ActionProvider {
         loginRequestTimeoutTask = nil
         startupTimeoutTask?.cancel()
         startupTimeoutTask = nil
+        pendingTurnStartRetryTask?.cancel()
+        pendingTurnStartRetryTask = nil
         stdoutHandle?.readabilityHandler = nil
         stderrHandle?.readabilityHandler = nil
         try? stdinHandle?.close()
@@ -2024,6 +2145,7 @@ final class CodexAppServerActionProvider: ActionProvider {
         pendingLogoutRequestID = nil
         lastLoginURL = nil
         lastLoginID = nil
+        mcpStartupStates = Self.makeInitialMcpStartupStates()
         authState = .unknown
         lastEmittedProgress = nil
         notifyStateChanged()

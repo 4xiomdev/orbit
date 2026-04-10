@@ -999,35 +999,37 @@ struct OrbitPanelView: View {
                 aboutLink(icon: "cup.and.saucer", title: "Buy Me a Coffee", url: "https://buymeacoffee.com/4xiom")
             }
 
-            Divider()
+            if AppBundleConfiguration.showsCodexDebugInfo {
+                Divider()
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Codex Debug")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundColor(.secondary)
-
-                if let activeTurnSummary = orbitManager.codexActiveTurnSummary, !activeTurnSummary.isEmpty {
-                    Text(activeTurnSummary)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Codex Debug")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundColor(.secondary)
+
+                    if let activeTurnSummary = orbitManager.codexActiveTurnSummary, !activeTurnSummary.isEmpty {
+                        Text(activeTurnSummary)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+
+                    if !orbitManager.codexCollaborationModes.isEmpty {
+                        Text("modes: \(orbitManager.codexCollaborationModes.joined(separator: ", "))")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if !orbitManager.codexDebugEvents.isEmpty {
+                        Text(orbitManager.codexDebugEvents.suffix(4).joined(separator: "\n"))
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
-                if !orbitManager.codexCollaborationModes.isEmpty {
-                    Text("modes: \(orbitManager.codexCollaborationModes.joined(separator: ", "))")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if !orbitManager.codexDebugEvents.isEmpty {
-                    Text(orbitManager.codexDebugEvents.suffix(4).joined(separator: "\n"))
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Divider()
             }
-
-            Divider()
 
             Text("Open source under MIT license")
                 .font(.system(size: 10, weight: .medium))
