@@ -527,6 +527,7 @@ private struct OrbitAppleVoiceCandidate: Hashable {
 }
 
 enum OrbitTTSProviderFactory {
+    @MainActor
     static func makePrimaryProvider(for voicePreset: OrbitVoicePreset) -> any TextToSpeechProvider {
         switch voicePreset {
         case .localVoice:
@@ -536,6 +537,7 @@ enum OrbitTTSProviderFactory {
         }
     }
 
+    @MainActor
     static func makeFallbackProvider() -> any TextToSpeechProvider {
         AppleSystemTTSProvider()
     }
