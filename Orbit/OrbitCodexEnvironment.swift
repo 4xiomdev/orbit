@@ -59,7 +59,11 @@ enum OrbitCodexEnvironment {
         "browser_resize"
     ]
 
-    static func prepareHome() throws -> OrbitPreparedCodexHome {
+    static func prepareHome(
+        model: String = OrbitCodexModelOption.fallbackDefaultModel,
+        reasoningEffort: OrbitCodexReasoningEffort = .medium,
+        serviceTier: OrbitCodexServiceTier = .fast
+    ) throws -> OrbitPreparedCodexHome {
         let fileManager = FileManager.default
         let supportDirectory = try supportRootDirectory()
         let codexHome = supportDirectory.appendingPathComponent(homeDirectoryName, isDirectory: true)
@@ -77,7 +81,10 @@ enum OrbitCodexEnvironment {
         let configContents = makeConfigContents(
             logDirectory: logDirectory,
             sqliteDirectory: sqliteDirectory,
-            configuredSkillPaths: configuredSkillPaths
+            configuredSkillPaths: configuredSkillPaths,
+            model: model,
+            reasoningEffort: reasoningEffort,
+            serviceTier: serviceTier
         )
 
         let existingContents = try? String(contentsOf: configPath, encoding: .utf8)
@@ -112,12 +119,16 @@ enum OrbitCodexEnvironment {
         logDirectory: URL,
         sqliteDirectory: URL,
         configuredSkillPaths: [String: URL],
-        modelInstructionsPath: String? = nil
+        modelInstructionsPath: String? = nil,
+        model: String = OrbitCodexModelOption.fallbackDefaultModel,
+        reasoningEffort: OrbitCodexReasoningEffort = .medium,
+        serviceTier: OrbitCodexServiceTier = .fast
     ) -> String {
+        let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         var lines: [String] = [
-            "model = \"gpt-5.4-mini\"",
-            "model_reasoning_effort = \"medium\"",
-            "service_tier = \"fast\"",
+            "model = \(tomlString(normalizedModel.isEmpty ? OrbitCodexModelOption.fallbackDefaultModel : normalizedModel))",
+            "model_reasoning_effort = \(tomlString(reasoningEffort.rawValue))",
+            "service_tier = \(tomlString(serviceTier.rawValue))",
             "approval_policy = \"never\"",
             "sandbox_mode = \"danger-full-access\"",
             "cli_auth_credentials_store = \"file\"",

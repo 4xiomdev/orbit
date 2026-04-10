@@ -19,7 +19,7 @@
 	<key>OpenAIAPIKey</key>
 	<string></string>
 	<key>CodexActionModel</key>
-	<string>gpt-5.4-mini</string>
+	<string>gpt-5.4</string>
 	<key>CodexActionServiceTier</key>
 	<string>fast</string>
 	<key>CodexActionSandbox</key>

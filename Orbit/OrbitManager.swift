@@ -103,11 +103,13 @@ final class OrbitManager: ObservableObject {
     private var codexOverlayDismissTask: Task<Void, Never>?
     private var transientHideTask: Task<Void, Never>?
     private var onboardingTask: Task<Void, Never>?
+    private var onboardingLaunchTask: Task<Void, Never>?
     private var codexSessionWarmupTask: Task<Void, Never>?
     private var actionAcknowledgementTask: Task<Void, Never>?
     private var codexWarmupGeneration: Int = 0
     private var hasSpokenActionAcknowledgement = false
     private var escapeKeyMonitor: Any?
+    private var lastObservedSetupStage: OrbitSetupStage?
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -166,7 +168,11 @@ final class OrbitManager: ObservableObject {
 
         if enabled {
             orbitOverlayWindowManager.hasShownOverlayBefore = true
-            orbitOverlayWindowManager.showOverlay(onScreens: NSScreen.screens, orbitManager: self)
+            orbitOverlayWindowManager.showOverlay(
+                onScreens: NSScreen.screens,
+                orbitManager: self,
+                showWelcomeOnFirstAppearance: false
+            )
             isOverlayVisible = true
         } else {
             orbitOverlayWindowManager.hideOverlay()
@@ -191,6 +197,7 @@ final class OrbitManager: ObservableObject {
 
     func dismissSetupComplete() {
         hasSeenSetupComplete = true
+        synchronizeSetupState(allowAutomaticOnboarding: false)
     }
 
     var hasCompletedVoiceModeSetup: Bool {
@@ -225,6 +232,7 @@ final class OrbitManager: ObservableObject {
                 self?.refreshActionProviderPresentation()
             }
         }
+        self.lastObservedSetupStage = setupStage
     }
 
     func start() {
@@ -244,29 +252,17 @@ final class OrbitManager: ObservableObject {
             guard let self else { return }
             self.ensureCodexSessionReady(forceFreshSession: false)
         }
-
-        if hasCompletedOnboarding && allPermissionsGranted && isOrbitCursorEnabled {
-            orbitOverlayWindowManager.hasShownOverlayBefore = true
-            orbitOverlayWindowManager.showOverlay(onScreens: NSScreen.screens, orbitManager: self)
-            isOverlayVisible = true
-        }
+        synchronizeSetupState()
     }
 
     func triggerOnboarding() {
-        NotificationCenter.default.post(name: .orbitDismissPanel, object: nil)
-        onboardingTask?.cancel()
         OrbitAnalytics.trackOnboardingStarted()
-        orbitOverlayWindowManager.showOverlay(onScreens: NSScreen.screens, orbitManager: self)
-        isOverlayVisible = true
+        launchOnboardingTour()
     }
 
     func replayOnboarding() {
-        NotificationCenter.default.post(name: .orbitDismissPanel, object: nil)
-        onboardingTask?.cancel()
         OrbitAnalytics.trackOnboardingReplayed()
-        orbitOverlayWindowManager.hasShownOverlayBefore = false
-        orbitOverlayWindowManager.showOverlay(onScreens: NSScreen.screens, orbitManager: self)
-        isOverlayVisible = true
+        launchOnboardingTour(resetOverlayFirstAppearance: true)
     }
 
     func clearDetectedElementLocation() {
@@ -358,6 +354,8 @@ final class OrbitManager: ObservableObject {
         if !previouslyHadAll && allPermissionsGranted {
             OrbitAnalytics.trackAllPermissionsGranted()
         }
+
+        synchronizeSetupState()
     }
 
     /// Triggers the macOS screen content picker by performing a dummy
@@ -386,13 +384,7 @@ final class OrbitManager: ObservableObject {
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
                     updateScreenAccessDiagnostic(lastError: "verified via live capture")
                     OrbitAnalytics.trackPermissionGranted(permission: "screen_content")
-
-                    // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isOrbitCursorEnabled {
-                        orbitOverlayWindowManager.hasShownOverlayBefore = true
-                        orbitOverlayWindowManager.showOverlay(onScreens: NSScreen.screens, orbitManager: self)
-                        isOverlayVisible = true
-                    }
+                    synchronizeSetupState()
                 }
             } catch {
                 print("⚠️ Screen access verification failed: \(error)")
@@ -592,6 +584,7 @@ final class OrbitManager: ObservableObject {
         } else {
             openAICloudCredentialState = .missing
         }
+        synchronizeSetupState()
     }
 
     private func handleShortcutTransition(_ transition: OrbitPushToTalkShortcut.ShortcutTransition) {
@@ -606,7 +599,11 @@ final class OrbitManager: ObservableObject {
             // If the cursor is hidden, bring it back transiently for this interaction
             if !isOrbitCursorEnabled && !isOverlayVisible {
                 orbitOverlayWindowManager.hasShownOverlayBefore = true
-                orbitOverlayWindowManager.showOverlay(onScreens: NSScreen.screens, orbitManager: self)
+                orbitOverlayWindowManager.showOverlay(
+                    onScreens: NSScreen.screens,
+                    orbitManager: self,
+                    showWelcomeOnFirstAppearance: false
+                )
                 isOverlayVisible = true
             }
 
@@ -735,6 +732,7 @@ final class OrbitManager: ObservableObject {
         case .commentary(let commentary):
             handleEarlyActionCommentary(commentary)
         case .liveUpdate(let update):
+            activeActionDetailLine = update
             appendActionUpdate(update)
             showCodexActivityOverlayCard()
         case .toolPrompt(let prompt):
@@ -1070,16 +1068,17 @@ final class OrbitManager: ObservableObject {
 
     private func refreshActionProviderPresentation() {
         availableCodexModels = actionProvider.availableModels
-        availableCodexEfforts = actionProvider.supportedEffortsForSelectedModel
+        reconcileCodexSelectionIfNeeded()
+        availableCodexEfforts = actionProvider.supportedEfforts(for: settings.codexActionModel)
         codexAuthState = actionProvider.authState
         codexAccountSummary = actionProvider.accountSummary
         codexDebugEvents = actionProvider.debugEvents
         codexCollaborationModes = actionProvider.collaborationModes
         codexExperimentalFeatures = actionProvider.experimentalFeatures
         codexActiveTurnSummary = actionProvider.activeTurnSummary
-        reconcileCodexSelectionIfNeeded()
         codexSessionSummary = actionProvider.sessionStatusSummary
         codexConfigurationSummary = actionProvider.configurationSummary
+        synchronizeSetupState()
     }
 
     private func reconcileCodexSelectionIfNeeded() {
@@ -1089,7 +1088,10 @@ final class OrbitManager: ObservableObject {
             settings.codexActionModel = preferredModel
         }
 
-        let supportedEfforts = availableCodexEfforts
+        let supportedEfforts = availableCodexModels
+            .first(where: { $0.model == settings.codexActionModel })?
+            .supportedEfforts
+            ?? availableCodexEfforts
         guard !supportedEfforts.isEmpty else { return }
         if !supportedEfforts.contains(settings.codexReasoningEffort) {
             settings.codexReasoningEffort = availableCodexModels
@@ -1245,6 +1247,8 @@ final class OrbitManager: ObservableObject {
         if preset == .localVoice {
             refreshCloudCredentialState()
         }
+
+        synchronizeSetupState()
     }
 
     @discardableResult
@@ -1272,6 +1276,7 @@ final class OrbitManager: ObservableObject {
             settings.voicePreset = .cloudVoice
             openAICloudCredentialState = .connected(source: .keychain)
             refreshTextToSpeechProvider()
+            synchronizeSetupState()
             return true
         case .invalid:
             OrbitOpenAIKeychainStore.deleteAPIKey()
@@ -1289,6 +1294,7 @@ final class OrbitManager: ObservableObject {
         OrbitOpenAIKeychainStore.deleteAPIKey()
         refreshCloudCredentialState()
         refreshTextToSpeechProvider()
+        synchronizeSetupState(allowAutomaticOnboarding: false)
     }
 
     func ensureCodexSessionReady(forceFreshSession: Bool = false) {
@@ -1523,6 +1529,7 @@ final class OrbitManager: ObservableObject {
     func beginOrbitTour() {
         OrbitAnalytics.trackOnboardingDemoTriggered()
         onboardingTask?.cancel()
+        onboardingLaunchTask?.cancel()
         textToSpeechProvider.stopPlayback()
         fallbackTextToSpeechProvider.stopPlayback()
         clearDetectedElementLocation()
@@ -1534,6 +1541,7 @@ final class OrbitManager: ObservableObject {
         activeActionStatusSummary = nil
         activeActionDetailLine = nil
         isRunningOnboardingTour = true
+        let wasAlreadyCompleted = hasCompletedOnboarding
 
         let steps = [
             "hey, i'm orbit.",
@@ -1553,10 +1561,76 @@ final class OrbitManager: ObservableObject {
 
             isRunningOnboardingTour = false
             self.hasCompletedOnboarding = true
+            if !wasAlreadyCompleted {
+                self.hasSeenSetupComplete = false
+            }
             activeActionStatus = .idle
             activeActionStatusSummary = nil
             activeActionDetailLine = nil
+            self.ensurePersistentOverlayIfEligible()
+            self.synchronizeSetupState(allowAutomaticOnboarding: false)
         }
+    }
+
+    private func launchOnboardingTour(resetOverlayFirstAppearance: Bool = false) {
+        NotificationCenter.default.post(name: .orbitDismissPanel, object: nil)
+        onboardingTask?.cancel()
+        onboardingLaunchTask?.cancel()
+        showOnboardingPrompt = false
+        onboardingPromptOpacity = 0.0
+        onboardingPromptText = ""
+        isRunningOnboardingTour = false
+        clearDetectedElementLocation()
+
+        if resetOverlayFirstAppearance {
+            orbitOverlayWindowManager.hasShownOverlayBefore = false
+        }
+
+        orbitOverlayWindowManager.showOverlay(
+            onScreens: NSScreen.screens,
+            orbitManager: self,
+            showWelcomeOnFirstAppearance: false
+        )
+        isOverlayVisible = true
+
+        onboardingLaunchTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard let self else { return }
+            self.beginOrbitTour()
+        }
+    }
+
+    private func synchronizeSetupState(allowAutomaticOnboarding: Bool = true) {
+        let currentStage = setupStage
+        defer { lastObservedSetupStage = currentStage }
+
+        if shouldKeepPersistentOverlayVisible {
+            ensurePersistentOverlayIfEligible()
+        }
+
+        guard allowAutomaticOnboarding else { return }
+        guard currentStage == .onboarding, lastObservedSetupStage != .onboarding, !isRunningOnboardingTour else {
+            return
+        }
+
+        launchOnboardingTour()
+    }
+
+    private var shouldKeepPersistentOverlayVisible: Bool {
+        hasCompletedOnboarding && allPermissionsGranted && isOrbitCursorEnabled
+    }
+
+    private func ensurePersistentOverlayIfEligible() {
+        guard shouldKeepPersistentOverlayVisible else { return }
+        orbitOverlayWindowManager.hasShownOverlayBefore = true
+        if !orbitOverlayWindowManager.isShowingOverlay() {
+            orbitOverlayWindowManager.showOverlay(
+                onScreens: NSScreen.screens,
+                orbitManager: self,
+                showWelcomeOnFirstAppearance: false
+            )
+        }
+        isOverlayVisible = true
     }
 
     private func runOnboardingStep(_ message: String, runPointDemo: Bool) async {
