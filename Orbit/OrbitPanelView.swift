@@ -1384,9 +1384,9 @@ struct OrbitPanelView: View {
     private var authCardMessage: String {
         switch orbitManager.codexAuthState {
         case .unknown, .checking:
-            return "Orbit is checking whether your shared Codex setup is already signed in."
+            return "Orbit is checking whether you're already signed in to Orbit."
         case .authRequired:
-            return "Orbit uses Codex app-server with your ChatGPT account. Connect once and future launches can reuse that shared auth state."
+            return "Orbit uses your ChatGPT account with its own Orbit-managed session. Connect once and future launches can reuse Orbit's saved session."
         case .loginInProgress:
             return "Finish the ChatGPT browser sign-in, then come back to Orbit."
         case .authFailed(let message):
