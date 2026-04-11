@@ -28,6 +28,10 @@ HELPER_PATH="${SUPPORT_DIR}/launch-after-install.sh"
 PLIST_PATH="${LAUNCH_AGENTS_DIR}/com.orbit.codex.postinstall-open.plist"
 
 mkdir -p "${LAUNCH_AGENTS_DIR}" "${SUPPORT_DIR}"
+chown "${CONSOLE_USER}:staff" "${LAUNCH_AGENTS_DIR}"
+chmod 755 "${LAUNCH_AGENTS_DIR}"
+chown -R "${CONSOLE_USER}:staff" "${SUPPORT_DIR}"
+find "${SUPPORT_DIR}" -type d -exec chmod 755 {} +
 
 cat > "${HELPER_PATH}" <<'SCRIPT'
 #!/bin/bash

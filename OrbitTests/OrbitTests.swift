@@ -5,6 +5,22 @@ import Testing
 @MainActor
 struct OrbitTests {
 
+    private func withTemporaryDirectory<Result>(
+        _ body: (URL) throws -> Result
+    ) throws -> Result {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: directoryURL.path
+            )
+            try? FileManager.default.removeItem(at: directoryURL)
+        }
+        return try body(directoryURL)
+    }
+
     @Test func firstPermissionRequestUsesSystemPromptOnly() async throws {
         let presentationDestination = WindowPositionManager.permissionRequestPresentationDestination(
             hasPermissionNow: false,
@@ -62,6 +78,63 @@ struct OrbitTests {
         #expect(config.contains("model = \"gpt-5.4\""))
         #expect(config.contains("model_reasoning_effort = \"medium\""))
         #expect(config.contains("service_tier = \"fast\""))
+    }
+
+    @Test func writableSupportDirectoryPassesPreflight() async throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let appSupportDirectory = temporaryRoot.appendingPathComponent("Application Support", isDirectory: true)
+            let orbitSupportDirectory = appSupportDirectory.appendingPathComponent("Orbit", isDirectory: true)
+            try FileManager.default.createDirectory(at: orbitSupportDirectory, withIntermediateDirectories: true)
+
+            let resolvedDirectory = try OrbitCodexEnvironment.validateSupportRootDirectory(
+                applicationSupportDirectory: appSupportDirectory
+            )
+
+            #expect(resolvedDirectory.path == orbitSupportDirectory.path)
+        }
+    }
+
+    @Test func missingSupportDirectoryIsAllowedWhenParentIsWritable() async throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let appSupportDirectory = temporaryRoot.appendingPathComponent("Application Support", isDirectory: true)
+            try FileManager.default.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+
+            let resolvedDirectory = try OrbitCodexEnvironment.validateSupportRootDirectory(
+                applicationSupportDirectory: appSupportDirectory
+            )
+
+            #expect(resolvedDirectory.path == appSupportDirectory.appendingPathComponent("Orbit", isDirectory: true).path)
+        }
+    }
+
+    @Test func unwritableSupportDirectoryReturnsRecoveryInstructions() async throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let appSupportDirectory = temporaryRoot.appendingPathComponent("Application Support", isDirectory: true)
+            let orbitSupportDirectory = appSupportDirectory.appendingPathComponent("Orbit", isDirectory: true)
+            try FileManager.default.createDirectory(at: orbitSupportDirectory, withIntermediateDirectories: true)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o555],
+                ofItemAtPath: orbitSupportDirectory.path
+            )
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o755],
+                    ofItemAtPath: orbitSupportDirectory.path
+                )
+            }
+
+            do {
+                _ = try OrbitCodexEnvironment.validateSupportRootDirectory(
+                    applicationSupportDirectory: appSupportDirectory
+                )
+                Issue.record("Expected support-directory preflight to fail for an unwritable folder.")
+            } catch {
+                let message = (error as NSError).localizedDescription
+                #expect(message.contains("Orbit cannot write to its support folder"))
+                #expect(message.contains("sudo chown -R \"$USER\":staff \"$HOME/Library/Application Support/Orbit\""))
+                #expect(message.contains("LaunchAgents/com.orbit.codex.postinstall-open.plist"))
+            }
+        }
     }
 
     @Test func modelCatalogParsingSupportsSnakeCasePayload() async throws {

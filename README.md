@@ -22,7 +22,7 @@
 
 <p align="center">
   <a href="https://orbitcodex.org"><img alt="Website" src="https://img.shields.io/badge/site-orbitcodex.org-111111?style=flat-square" /></a>
-  <a href="https://orbitcodex.org/download"><img alt="Latest installer" src="https://img.shields.io/github/v/release/4xiomdev/orbit-downloads?display_name=release&style=flat-square" /></a>
+  <a href="https://orbitcodex.org/download"><img alt="Latest installer" src="https://img.shields.io/github/v/release/4xiomdev/orbit?display_name=release&style=flat-square" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/4xiomdev/orbit?style=flat-square" /></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%2014.2%2B-20232a?style=flat-square" />
 </p>
@@ -53,7 +53,7 @@ Orbit is an independent open-source project. It is built on Codex by OpenAI, but
 3. Run the installer, then open Orbit from `Applications`.
 4. Look for the Orbit icon in your menu bar.
 
-Installers are published through [`4xiomdev/orbit-downloads`](https://github.com/4xiomdev/orbit-downloads/releases/latest). The PKG is the primary install path, with a DMG attached as a quiet fallback.
+Installers are published through the main [`4xiomdev/orbit`](https://github.com/4xiomdev/orbit/releases/latest) releases page. The PKG is the primary install path, with a DMG attached as a quiet fallback.
 
 ## Quick start
 

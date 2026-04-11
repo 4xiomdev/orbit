@@ -10,6 +10,7 @@ struct OrbitPreparedCodexHome {
 
 enum OrbitCodexEnvironment {
     private static let homeDirectoryName = "CodexHome"
+    private static let supportDirectoryName = "Orbit"
     private static let bundledSkillResourceDirectoryName = "OrbitBundledSkills"
     private static let bundledModelInstructionsFileName = "OrbitModelInstructions.md"
 
@@ -65,7 +66,7 @@ enum OrbitCodexEnvironment {
         serviceTier: OrbitCodexServiceTier = .fast
     ) throws -> OrbitPreparedCodexHome {
         let fileManager = FileManager.default
-        let supportDirectory = try supportRootDirectory()
+        let supportDirectory = try validateSupportRootDirectory()
         let codexHome = supportDirectory.appendingPathComponent(homeDirectoryName, isDirectory: true)
         let logDirectory = codexHome.appendingPathComponent("log", isDirectory: true)
         let sqliteDirectory = codexHome.appendingPathComponent("sqlite", isDirectory: true)
@@ -103,8 +104,64 @@ enum OrbitCodexEnvironment {
         )
     }
 
-    private static func supportRootDirectory() throws -> URL {
-        guard let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+    static func validateSupportRootDirectory(
+        fileManager: FileManager = .default,
+        applicationSupportDirectory: URL? = nil
+    ) throws -> URL {
+        let supportDirectory = try supportRootDirectory(
+            fileManager: fileManager,
+            applicationSupportDirectory: applicationSupportDirectory
+        )
+        var isDirectory: ObjCBool = false
+
+        if fileManager.fileExists(atPath: supportDirectory.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else {
+                let message = "Orbit expected a support folder at \(supportDirectory.path), but found a file instead."
+                OrbitSupportLog.append("codex", message)
+                throw NSError(
+                    domain: "OrbitCodexEnvironment",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: message]
+                )
+            }
+
+            guard fileManager.isWritableFile(atPath: supportDirectory.path) else {
+                let message = supportDirectoryNotWritableMessage(for: supportDirectory)
+                OrbitSupportLog.append("codex", "support directory is not writable: \(supportDirectory.path)")
+                throw NSError(
+                    domain: "OrbitCodexEnvironment",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: message]
+                )
+            }
+
+            return supportDirectory
+        }
+
+        let parentDirectory = supportDirectory.deletingLastPathComponent()
+        guard fileManager.isWritableFile(atPath: parentDirectory.path) else {
+            let message = "Orbit cannot create its support folder at \(supportDirectory.path) because \(parentDirectory.path) is not writable."
+            OrbitSupportLog.append("codex", message)
+            throw NSError(
+                domain: "OrbitCodexEnvironment",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        }
+
+        return supportDirectory
+    }
+
+    private static func supportRootDirectory(
+        fileManager: FileManager = .default,
+        applicationSupportDirectory: URL? = nil
+    ) throws -> URL {
+        let baseURL: URL
+        if let applicationSupportDirectory {
+            baseURL = applicationSupportDirectory
+        } else if let resolvedURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            baseURL = resolvedURL
+        } else {
             throw NSError(
                 domain: "OrbitCodexEnvironment",
                 code: 1,
@@ -112,7 +169,22 @@ enum OrbitCodexEnvironment {
             )
         }
 
-        return baseURL.appendingPathComponent("Orbit", isDirectory: true)
+        return baseURL.appendingPathComponent(supportDirectoryName, isDirectory: true)
+    }
+
+    private static func supportDirectoryNotWritableMessage(for supportDirectory: URL) -> String {
+        let logPath = OrbitSupportLog.currentLogFilePath() ?? "~/Library/Logs/Orbit/orbit-support.log"
+        return """
+        Orbit cannot write to its support folder at \(supportDirectory.path).
+
+        This usually means the folder is owned by root from an earlier Orbit installer run. Repair it in Terminal with:
+
+        sudo chown -R "$USER":staff "$HOME/Library/Application Support/Orbit"
+        rm -f "$HOME/Library/LaunchAgents/com.orbit.codex.postinstall-open.plist"
+
+        Then reopen Orbit.
+        Support log: \(logPath)
+        """
     }
 
     static func makeConfigContents(

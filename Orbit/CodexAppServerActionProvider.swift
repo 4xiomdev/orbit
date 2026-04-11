@@ -361,7 +361,7 @@ final class CodexAppServerActionProvider: ActionProvider {
             do {
                 try bootstrapSessionIfNeeded()
             } catch {
-                let message = "Orbit could not start Codex app-server: \(error.localizedDescription)"
+                let message = Self.startupFailureMessage(for: error)
                 lastFailureMessage = message
                 status = .failed(message)
                 authState = .runtimeUnavailable(message)
@@ -2077,6 +2077,14 @@ final class CodexAppServerActionProvider: ActionProvider {
             .replacingOccurrences(of: "GPT-", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? displayName : cleaned
+    }
+
+    private static func startupFailureMessage(for error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == "OrbitCodexEnvironment" {
+            return nsError.localizedDescription
+        }
+        return "Orbit could not start Codex app-server: \(nsError.localizedDescription)"
     }
 
     private func resolveCodexExecutable() throws -> String {
